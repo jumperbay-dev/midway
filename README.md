@@ -20,6 +20,15 @@ Done so far:
    Dock badge with Inbox unread.
 
    Not yet: "When I'm free" and travel-based snoozes, key rebinding, Claude in Focus, piles synced across Macs.
+5. **Tags and Screener**: one query syntax for search and rules (`from:` `domain:` `via:` `list:` `subject:` `tag:`
+   `is:unread|starred|known` `older:30d`, words, `OR`, `NOT`/`-`, brackets). Local tags (`t`, never sent to a server,
+   kept by Message-ID) with rules that tag new mail and can re-run on old mail. The Screener holds first-time senders
+   (`y` allow, `n` block, `t` allow and tag; `g s`), with "always let through" rules. Each message knows which of your
+   addresses it reached ("via shop+"), shown as a chip and as a Via section in the sidebar. Tags, rules and Screener
+   decisions export to JSON and import on another Mac.
+
+   Not yet: leak watch and the Via settings page, rule actions beyond tag and allow (mark read, archive),
+   `has:attachment` / `header:` terms, AI-suggested tags.
 
 Builds with the Command Line Tools alone (no Xcode, no CI).
 

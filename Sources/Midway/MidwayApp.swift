@@ -182,6 +182,23 @@ final class AppModel {
         undoLast = { try? store.setPile(id) { $0 = before } }
     }
 
+    /// Local tags: no server involved.
+    func setTag(_ tag: Int64, _ key: String, _ on: Bool) {
+        guard let store else { return }
+        try? store.setTag(tag, on: key, on)
+        undoLast = { try? store.setTag(tag, on: key, !on) }
+    }
+
+    /// Screener: allow, or block (which archives their Inbox mail after the undo window).
+    func decide(_ address: String, allow: Bool) {
+        guard let store, let archived = try? store.decide(address, allow: allow) else { return }
+        undoLast = { [weak self] in
+            try? store.undecide(address, unarchive: archived)
+            self?.accounts.forEach { self?.wake($0.id!, after: 0) }
+        }
+        if !archived.isEmpty { accounts.forEach { wake($0.id!, after: 5) } }
+    }
+
     func wake(_ account: Int64, after delay: TimeInterval) {
         let s = syncers[account]
         Task {

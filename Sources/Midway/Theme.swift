@@ -13,6 +13,10 @@ enum T {
     static let teal = Color(hex: 0x3FC1B6)
     static let gold = Color(hex: 0xD9A441)
 
+    /// Eight muted sea tones for tags, so tags never fight the accent.
+    static let tags: [Color] = [0xEE8F72, 0x62C792, 0xE58FB4, 0xA797F2, 0x6AB2EC, 0xD9A441, 0x3FC1B6, 0x8DA3AE].map { Color(hex: $0) }
+    static func tag(_ i: Int) -> Color { tags[(i % 8 + 8) % 8] }
+
     static let sidebar: CGFloat = 232
     static let list: CGFloat = 360
 }
@@ -47,6 +51,15 @@ struct PrimaryButton: ButtonStyle {
         configuration.label.font(.system(size: 12, weight: .medium)).foregroundStyle(T.bg)
             .padding(.horizontal, 12).frame(height: 28)
             .background(RoundedRectangle(cornerRadius: 4).fill(T.teal.opacity(configuration.isPressed ? 0.8 : 1)))
+    }
+}
+
+struct OutlineButton: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.font(.system(size: 12, weight: .medium)).foregroundStyle(T.text)
+            .padding(.horizontal, 12).frame(height: 28)
+            .background(RoundedRectangle(cornerRadius: 4).fill(T.sel.opacity(configuration.isPressed ? 0.6 : 1)))
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(T.line))
     }
 }
 

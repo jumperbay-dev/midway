@@ -52,6 +52,11 @@ public struct Message: Codable, Hashable, Sendable, Identifiable, FetchableRecor
     public var blob: String
     public var gmMsgId: Int64?
     public var gmThrId: Int64?
+    /// Message-ID, or the blob hash without one: what tags hang on.
+    public var key: String?
+    /// Which of your addresses it reached (Provenance.via).
+    public var via: String?
+    public var listId: String?
 
     public mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
 }
@@ -260,6 +265,49 @@ public final class Store: Sendable {
                 t.column("wakeOnReply", .boolean).notNull().defaults(to: true)
             }
         }
+        m.registerMigration("v5-tags") { db in
+            try db.alter(table: "message") { t in
+                t.add(column: "key", .text)
+                t.add(column: "via", .text)
+                t.add(column: "listId", .text)
+            }
+            try db.create(index: "message_on_key", on: "message", columns: ["key"])
+            try db.create(index: "message_on_via", on: "message", columns: ["via"])
+            try db.create(index: "message_on_fromAddr", on: "message", columns: ["fromAddr"])
+            try db.create(table: "tag") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("name", .text).notNull().unique().collate(.nocase)
+                t.column("colour", .integer).notNull()
+            }
+            try db.create(table: "tag_link") { t in
+                t.column("key", .text).notNull()
+                t.column("tagId", .integer).notNull().references("tag", onDelete: .cascade)
+                t.column("source", .text).notNull()  // manual, or rule:<id>
+                t.column("createdAt", .datetime).notNull()
+                t.primaryKey(["key", "tagId"])
+            }
+            try db.create(table: "tag_rule") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("tagId", .integer).references("tag", onDelete: .cascade)
+                t.column("query", .text).notNull()
+                t.column("enabled", .boolean).notNull().defaults(to: true)
+            }
+            try db.create(table: "screener") { t in
+                t.primaryKey("address", .text).collate(.nocase)
+                t.column("decision", .text).notNull()  // allow, block
+            }
+            try db.execute(sql: "UPDATE message SET key = COALESCE(messageId, blob)")
+            let rows = try Row.fetchAll(db, sql: "SELECT message.id, message.blob, account.email FROM message JOIN account ON account.id = message.accountId")
+            for r in rows {
+                guard let raw = try? Data(contentsOf: blobURL(blobs, r["blob"])) else { continue }
+                let p = MIME.parse(raw)
+                try db.execute(sql: "UPDATE message SET via = ?, listId = ? WHERE id = ?",
+                               arguments: [Provenance.via(p, account: r["email"]), Provenance.listId(p.listId), r["id"] as Int64])
+            }
+            // The Screener starts now: everyone who already wrote, and everyone you wrote to, is let through.
+            try db.execute(sql: "INSERT OR IGNORE INTO screener (address, decision) SELECT DISTINCT fromAddr, 'allow' FROM message")
+            try db.execute(sql: "INSERT OR IGNORE INTO screener (address, decision) SELECT address, 'allow' FROM contact WHERE sent > 0")
+        }
         return m
     }
 
@@ -285,7 +333,8 @@ public final class Store: Sendable {
         try db.write { db in
             let old = try Int64.fetchOne(db, sql: "SELECT uidValidity FROM mailbox WHERE accountId = ? AND name = ?", arguments: [account, name])
             if old != uidValidity {
-                // ponytail: rows are re-downloaded on UIDVALIDITY reset; re-matching by stable key comes with tags (M5)
+                // Rows are re-downloaded on UIDVALIDITY reset. Tags follow by Message-ID.
+                // ponytail: piles are lost on a reset; key them by Message-ID too if that bites
                 try db.execute(sql: "DELETE FROM message WHERE accountId = ? AND mailbox = ?", arguments: [account, name])
                 try db.execute(sql: "INSERT OR REPLACE INTO mailbox (accountId, name, uidValidity) VALUES (?, ?, ?)", arguments: [account, name, uidValidity])
             }
@@ -314,17 +363,19 @@ public final class Store: Sendable {
         let hash = try writeBlob(raw)
         let p = MIME.parse(raw)
         try db.write { db in
+            let email = try String.fetchOne(db, sql: "SELECT email FROM account WHERE id = ?", arguments: [account]) ?? ""
             var m = Message(
                 accountId: account, mailbox: mailbox, uid: uid, messageId: p.messageId,
                 fromName: p.from.name, fromAddr: p.from.address, toAddr: p.to.address,
                 subject: p.subject, date: p.date ?? .now, preview: p.preview,
-                seen: state.seen, flagged: state.flagged, blob: hash, gmMsgId: state.gmMsgId, gmThrId: state.gmThrId)
+                seen: state.seen, flagged: state.flagged, blob: hash, gmMsgId: state.gmMsgId, gmThrId: state.gmThrId,
+                key: p.messageId ?? hash, via: Provenance.via(p, account: email), listId: Provenance.listId(p.listId))
             try m.insert(db, onConflict: .ignore)
             guard let id = m.id, db.changesCount > 0 else { return }
-            try setLabels(state.labels, message: id, db)
-            let email = try String.fetchOne(db, sql: "SELECT email FROM account WHERE id = ?", arguments: [account]) ?? ""
+            try Self.setLabels(state.labels, message: id, db)
             try Self.index(id, p, account: email, date: m.date, db)
             try Self.wakeSnoozed(answeredBy: p, thread: state.gmThrId, db)
+            try Self.screenAndTag(id, from: p.from.address, account: email, db)
         }
     }
 
@@ -347,7 +398,7 @@ public final class Store: Sendable {
                 let queued = Set(try String.fetchAll(db, sql: "SELECT kind FROM op WHERE messageId = ?", arguments: [id]))
                 if !queued.contains("seen") { try db.execute(sql: "UPDATE message SET seen = ? WHERE id = ?", arguments: [s.seen, id]) }
                 if !queued.contains("flagged") { try db.execute(sql: "UPDATE message SET flagged = ? WHERE id = ?", arguments: [s.flagged, id]) }
-                if !queued.contains("archive") && !queued.contains("trash") { try setLabels(s.labels, message: id, db) }
+                if !queued.contains("archive") && !queued.contains("trash") { try Self.setLabels(s.labels, message: id, db) }
             }
         }
     }
@@ -368,7 +419,7 @@ public final class Store: Sendable {
         }
     }
 
-    func setLabels(_ labels: [String], message: Int64, _ db: Database) throws {
+    static func setLabels(_ labels: [String], message: Int64, _ db: Database) throws {
         try db.execute(sql: "DELETE FROM label WHERE messageId = ?", arguments: [message])
         for name in Set(labels) {
             try db.execute(sql: "INSERT INTO label (messageId, name) VALUES (?, ?)", arguments: [message, name])
@@ -381,35 +432,37 @@ public final class Store: Sendable {
     /// cancels it instead (archive, then undo), restoring the labels it changed.
     /// `delay` holds archive and trash back so undo can catch them before the server does.
     public func apply(_ kind: OpKind, _ value: Bool, to id: Int64, delay: TimeInterval = 0) throws {
-        try db.write { db in
-            if let row = try Row.fetchOne(db, sql: "SELECT id, value, prior FROM op WHERE messageId = ? AND kind = ?", arguments: [id, kind.rawValue]) {
-                guard row["value"] as Bool != value else { return }
-                try db.execute(sql: "DELETE FROM op WHERE id = ?", arguments: [row["id"] as Int64])
-                switch kind {
-                case .seen, .flagged: try db.execute(sql: "UPDATE message SET \(kind.rawValue) = ? WHERE id = ?", arguments: [value, id])
-                case .archive, .trash:
-                    let prior: String? = row["prior"]
-                    try setLabels(prior.flatMap { try? JSONDecoder().decode([String].self, from: Data($0.utf8)) } ?? [], message: id, db)
-                }
-                return
-            }
-            let labels = try String.fetchAll(db, sql: "SELECT name FROM label WHERE messageId = ?", arguments: [id])
-            var prior: String?
+        try db.write { try Self.queue(kind, value, to: id, delay: delay, $0) }
+    }
+
+    static func queue(_ kind: OpKind, _ value: Bool, to id: Int64, delay: TimeInterval, _ db: Database) throws {
+        if let row = try Row.fetchOne(db, sql: "SELECT id, value, prior FROM op WHERE messageId = ? AND kind = ?", arguments: [id, kind.rawValue]) {
+            guard row["value"] as Bool != value else { return }
+            try db.execute(sql: "DELETE FROM op WHERE id = ?", arguments: [row["id"] as Int64])
             switch kind {
-            case .seen, .flagged:
-                guard try Bool.fetchOne(db, sql: "SELECT \(kind.rawValue) FROM message WHERE id = ?", arguments: [id]) != value else { return }
-                try db.execute(sql: "UPDATE message SET \(kind.rawValue) = ? WHERE id = ?", arguments: [value, id])
-            case .archive:
-                prior = String(decoding: try JSONEncoder().encode(labels), as: UTF8.self)
-                try setLabels(value ? labels.filter { $0 != Label.inbox } : labels + [Label.inbox], message: id, db)
-            case .trash:
-                prior = String(decoding: try JSONEncoder().encode(labels), as: UTF8.self)
-                try setLabels(value ? [Label.trash] : labels.filter { $0 != Label.trash } + [Label.inbox], message: id, db)
+            case .seen, .flagged: try db.execute(sql: "UPDATE message SET \(kind.rawValue) = ? WHERE id = ?", arguments: [value, id])
+            case .archive, .trash:
+                let prior: String? = row["prior"]
+                try Self.setLabels(prior.flatMap { try? JSONDecoder().decode([String].self, from: Data($0.utf8)) } ?? [], message: id, db)
             }
-            try db.execute(
-                sql: "INSERT INTO op (messageId, kind, value, prior, notBefore) VALUES (?, ?, ?, ?, ?)",
-                arguments: [id, kind.rawValue, value, prior, Date.now.addingTimeInterval(delay)])
+            return
         }
+        let labels = try String.fetchAll(db, sql: "SELECT name FROM label WHERE messageId = ?", arguments: [id])
+        var prior: String?
+        switch kind {
+        case .seen, .flagged:
+            guard try Bool.fetchOne(db, sql: "SELECT \(kind.rawValue) FROM message WHERE id = ?", arguments: [id]) != value else { return }
+            try db.execute(sql: "UPDATE message SET \(kind.rawValue) = ? WHERE id = ?", arguments: [value, id])
+        case .archive:
+            prior = String(decoding: try JSONEncoder().encode(labels), as: UTF8.self)
+            try Self.setLabels(value ? labels.filter { $0 != Label.inbox } : labels + [Label.inbox], message: id, db)
+        case .trash:
+            prior = String(decoding: try JSONEncoder().encode(labels), as: UTF8.self)
+            try Self.setLabels(value ? [Label.trash] : labels.filter { $0 != Label.trash } + [Label.inbox], message: id, db)
+        }
+        try db.execute(
+            sql: "INSERT INTO op (messageId, kind, value, prior, notBefore) VALUES (?, ?, ?, ?, ?)",
+            arguments: [id, kind.rawValue, value, prior, Date.now.addingTimeInterval(delay)])
     }
 
     /// Due ops for one mailbox, oldest first.
@@ -481,6 +534,8 @@ public final class Store: Sendable {
                     lastSeen = MAX(lastSeen, excluded.lastSeen),
                     sent = sent + excluded.sent, received = received + excluded.received
                 """, arguments: [a.address, a.name, date, sentByMe ? 1 : 0, sentByMe ? 0 : 1])
+            // Writing to someone lets them past the Screener.
+            if sentByMe { try db.execute(sql: "INSERT OR IGNORE INTO screener (address, decision) VALUES (?, 'allow')", arguments: [a.address]) }
         }
     }
 

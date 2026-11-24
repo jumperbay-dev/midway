@@ -161,7 +161,7 @@ struct CommandBar: View {
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(T.line))
             .padding(.top, 128)
         }
-        .onAppear { focused = true }
+        .task { focused = true }  // after the overlay is in the hierarchy, or the list keeps focus
         .onChange(of: text) { index = 0; findMessages() }
     }
 
@@ -188,7 +188,7 @@ struct CommandBar: View {
 struct KeyboardMap: View {
     let close: () -> Void
     static let bound = ["E": "archive", "R": "reply", "S": "star", "G": "go to", "J": "next", "K": "previous", "C": "compose",
-                        "U": "unread", "Z": "undo", "L": "reply later", "H": "snooze", "Y": "set aside"]
+                        "U": "unread", "Z": "undo", "L": "reply later", "H": "snooze", "Y": "set aside", "T": "tag"]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -203,7 +203,8 @@ struct KeyboardMap: View {
             .padding(.top, 24)
             HStack(alignment: .top, spacing: 48) {
                 list("Keys", [("Delete", "#"), ("Search", "/"), ("This map", "?")])
-                list("Sequences", [("Go to inbox", "g i")])
+                list("Sequences", [("Go to inbox", "g i"), ("Go to Screener", "g s")])
+                list("In the Screener", [("Allow", "y"), ("Block", "n"), ("Allow and tag", "t")])
                 list("With modifiers", [("Command bar", "⌘ K"), ("Send", "⌘ ↩"), ("Focus and reply", "⌘ ."), ("Undo", "⌘ Z")])
             }
             .padding(.top, 32)

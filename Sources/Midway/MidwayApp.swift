@@ -37,6 +37,8 @@ struct MidwayApp: App {
                 Button("Focus and Reply") { model.mode = .focus }.keyboardShortcut(".")
                 Button("Search") { model.mode = .search }.keyboardShortcut("f")
                 Button("Keyboard Map") { model.mode = .keys }.keyboardShortcut("/", modifiers: [.command, .shift])
+                Divider()
+                Button("Copy Latest Code") { model.copyLatestCode() }.keyboardShortcut("c", modifiers: [.command, .option])
             }
         }
 
@@ -64,6 +66,8 @@ final class AppModel {
     private var syncers: [Int64: AccountSync] = [:]
     private var credentials: [Int64: Credentials] = [:]
     private var outbox: Outbox?
+    /// A passing message with nothing to undo ("Copied code").
+    var notice: String?
     /// Takes back the last action (archive, star, a pile, a snooze…), for ⌘Z.
     var undoLast: (() -> Void)?
     private var tasks: [Task<Void, Never>] = []
@@ -180,6 +184,21 @@ final class AppModel {
         guard let store, let id = message.id, let before = try? store.pile(id) else { return }
         try? store.setPile(id, change)
         undoLast = { try? store.setPile(id) { $0 = before } }
+    }
+
+    /// Codes go to the pasteboard marked concealed, so clipboard managers skip them.
+    func copy(_ s: String, secret: Bool = false, notice: String) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(s, forType: .string)
+        if secret { pb.setString("", forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")) }
+        self.notice = notice
+    }
+
+    // ponytail: an app shortcut, not a system-wide hotkey; that needs a Carbon hot key or a menu bar extra
+    func copyLatestCode() {
+        guard let c = try? store?.latestCode() else { notice = "No code in the last 15 minutes"; return }
+        copy(c.code, secret: true, notice: "Copied code from \(c.from)")
     }
 
     /// Local tags: no server involved.

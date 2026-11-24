@@ -29,6 +29,7 @@ public enum MIME {
         public var listId: String?
         /// The address the receiving server delivered to (X-Original-To, X-Delivered-To or the topmost Delivered-To).
         public var deliveredTo: String?
+        public var listUnsubscribe: String?
         public var date: Date?
         public var messageId: String?
         public var html: String?
@@ -51,6 +52,7 @@ public enum MIME {
         p.references = headers["references"]
         p.inReplyTo = headers["in-reply-to"]
         p.listId = headers["list-id"]
+        p.listUnsubscribe = headers["list-unsubscribe"]
         p.deliveredTo = (headers["x-original-to"] ?? headers["x-delivered-to"] ?? headers["delivered-to"]).map { address($0).address }
         p.date = headers["date"].flatMap(date)
         p.messageId = headers["message-id"]?.trimmingCharacters(in: CharacterSet(charactersIn: "<> "))

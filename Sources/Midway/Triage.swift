@@ -205,7 +205,7 @@ struct KeyboardMap: View {
                 list("Keys", [("Delete", "#"), ("Search", "/"), ("This map", "?")])
                 list("Sequences", [("Go to inbox", "g i"), ("Go to Screener", "g s")])
                 list("In the Screener", [("Allow", "y"), ("Block", "n"), ("Allow and tag", "t")])
-                list("With modifiers", [("Command bar", "⌘ K"), ("Send", "⌘ ↩"), ("Focus and reply", "⌘ ."), ("Undo", "⌘ Z")])
+                list("With modifiers", [("Command bar", "⌘ K"), ("Send", "⌘ ↩"), ("Focus and reply", "⌘ ."), ("Undo", "⌘ Z"), ("Copy latest code", "⌥ ⌘ C")])
             }
             .padding(.top, 32)
             Spacer()

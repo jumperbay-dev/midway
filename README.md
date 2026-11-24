@@ -29,6 +29,14 @@ Done so far:
 
    Not yet: leak watch and the Via settings page, rule actions beyond tag and allow (mark read, archive),
    `has:attachment` / `header:` terms, AI-suggested tags.
+6. **Quick access**: a local extractor (patterns only, no AI, no network) finds one-time codes, parcels (UPS, DHL,
+   DPD, GLS, Hermes, FedEx, postal S10 numbers, "track your parcel" links), key links (verify, confirm, reset password,
+   unsubscribe including `List-Unsubscribe`, join meeting) and booking or order numbers. The reader shows a code banner
+   for 15 minutes with Copy, tracking and link buttons with the real domain (opened in the browser), and copy chips.
+   Rows show a delivery chip; the command bar has "Copy code" and Deliveries (cleared by a "delivered" mail or after
+   30 days). Go ▸ Copy Latest Code is ⌥⌘C; codes go to the pasteboard marked concealed.
+
+   Not yet: a system-wide shortcut for the latest code, "Find things in this mail" with AI, unwrapping tracking redirects.
 
 Builds with the Command Line Tools alone (no Xcode, no CI).
 

@@ -87,6 +87,8 @@ struct MailView: View {
     @Local private var tagsByKey: [String: [Tag]] = [:]
     @Local private var allTags: [Tag] = []
     @Local private var tagging: TagTarget?
+    /// Parcels on their way, by message: the carrier for the row's delivery chip.
+    @Local private var deliveries: [Int64: String] = [:]
     @FocusState private var focused: Bool
     @Environment(\.openWindow) private var openWindow
 
@@ -119,7 +121,7 @@ struct MailView: View {
                         Rectangle().fill(T.line).frame(width: 1)
                         if let current, let store = model.store {
                             Reader(message: current, store: store, pile: piles[current.id ?? -1], snoozing: $snoozing,
-                                   act: act, setPile: pile, snooze: snooze, reply: { compose(current) }, tag: { tagging = .message(current) })
+                                   act: act, setPile: pile, snooze: snooze, reply: { compose(current) }, tag: { tagging = .message(current) }, model: model)
                                 .id(current.id)
                         } else {
                             Text(messages.isEmpty ? (box == .inbox ? "All caught up" : "Nothing here") : "No message selected")
@@ -280,6 +282,18 @@ struct MailView: View {
                 .init(group: group, title: "Delete", key: "#") { act(.trash, m) },
             ]
         }
+        if let store = model.store {
+            if let c = try? store.latestCode() {
+                out.append(.init(group: "Quick access", title: "Copy code \(c.code) · \(c.from)", key: "⌥⌘C") { model.copy(c.code, secret: true, notice: "Copied code") })
+            }
+            for d in (try? store.deliveries()) ?? [] {
+                let number = d.item.value == d.item.url ? "" : " \(d.item.value)"
+                out.append(.init(group: "Deliveries", title: "\(d.item.label)\(number) · \(d.subject)", key: nil) {
+                    if let s = d.item.url, let url = URL(string: s), ["http", "https"].contains(url.scheme ?? "") { NSWorkspace.shared.open(url) }
+                    else { box = .inbox; selected = d.item.messageId }
+                })
+            }
+        }
         out += [
             .init(group: "Go to", title: "Inbox", key: "g i") { box = .inbox },
             .init(group: "Go to", title: "Reply later", key: nil) { box = .replyLater },
@@ -323,7 +337,7 @@ struct MailView: View {
                     LazyVStack(spacing: 0) {
                         ForEach(messages) { m in
                             Row(message: m, pile: piles[m.id ?? -1], now: now, selected: m.id == selected,
-                                tags: tagsByKey[m.key ?? ""] ?? [], via: viaLabel(m))
+                                tags: tagsByKey[m.key ?? ""] ?? [], via: viaLabel(m), delivery: deliveries[m.id ?? -1])
                                 .id(m.id)
                                 .onTapGesture { selected = m.id; focused = true }
                         }
@@ -352,10 +366,15 @@ struct MailView: View {
             let keys = Array(Set(rows.compactMap(\.key)))
             // ponytail: one IN list over the shown keys; page it if a view ever lists tens of thousands
             let links = keys.isEmpty ? [] : try GRDB.Row.fetchAll(db, sql: "SELECT key, tagId FROM tag_link WHERE key IN (\(databaseQuestionMarks(count: keys.count)))", arguments: StatementArguments(keys)).map { ($0["key"] as String, $0["tagId"] as Int64) }
-            return (rows, try Pile.fetchAll(db), try Tag.fetchAll(db, sql: "SELECT * FROM tag ORDER BY name"), links)
+            let ids = rows.compactMap(\.id)
+            let parcels = ids.isEmpty ? [] : try GRDB.Row.fetchAll(db, sql: """
+                SELECT messageId, label FROM quick_item WHERE kind = 'parcel' AND delivered = 0 AND date > ? AND messageId IN (\(databaseQuestionMarks(count: ids.count)))
+                """, arguments: StatementArguments([now.addingTimeInterval(-Quick.deliveryLifetime)]) + StatementArguments(ids)).map { ($0[0] as Int64, $0[1] as String) }
+            return (rows, try Pile.fetchAll(db), try Tag.fetchAll(db, sql: "SELECT * FROM tag ORDER BY name"), links, parcels)
         }
         do {
-            for try await (rows, p, tags, links) in obs.values(in: store.db) {
+            for try await (rows, p, tags, links, parcels) in obs.values(in: store.db) {
+                deliveries = Dictionary(parcels, uniquingKeysWith: { a, _ in a })
                 messages = rows
                 piles = Dictionary(uniqueKeysWithValues: p.map { ($0.messageId, $0) })
                 allTags = tags
@@ -396,6 +415,10 @@ struct Toasts: View {
                 if o.error == nil && o.sendAt > .now {
                     pill("Sending to \(MIME.addresses(o.toList).map { $0.name.isEmpty ? $0.address : $0.name }.joined(separator: ", "))") { Button("Undo") { model.unsend(o.draftId); openWindow(o.draftId) }.buttonStyle(GhostButton()) }
                 }
+            }
+            if let notice = model.notice {
+                pill(notice) { EmptyView() }
+                    .task(id: notice) { try? await Task.sleep(for: .seconds(3)); model.notice = nil }
             }
             if let toast {
                 pill(toast) { HStack(spacing: 6) { Kbd(key: "⌘Z"); Text("undo") }.font(.meta12).foregroundStyle(T.faint) }
@@ -503,6 +526,7 @@ struct Row: View {
     let selected: Bool
     var tags: [Tag] = []
     var via: String?
+    var delivery: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -518,7 +542,7 @@ struct Row: View {
             Text(message.subject.isEmpty ? "(no subject)" : message.subject).lineLimit(1)
             Text(message.preview).font(.meta12).foregroundStyle(T.faint).lineLimit(1)
             let piled = pile.map { $0.replyLater || $0.setAside || $0.snoozedUntil != nil } ?? false
-            if piled || !tags.isEmpty || via != nil {
+            if piled || !tags.isEmpty || via != nil || delivery != nil {
                 HStack(spacing: 4) {
                     if let pile {
                         if pile.replyLater { chip("Reply later", T.gold) }
@@ -526,6 +550,10 @@ struct Row: View {
                         if let until = pile.snoozedUntil {
                             until > now ? chip("Until \(until.formatted(.dateTime.weekday(.abbreviated).hour().minute()))", T.muted) : chip("Back from snooze", T.teal)
                         }
+                    }
+                    if let delivery {
+                        Label(delivery, systemImage: "shippingbox").font(.system(size: 11)).foregroundStyle(T.teal)
+                            .padding(.horizontal, 8).frame(height: 18).background(RoundedRectangle(cornerRadius: 4).fill(T.teal.opacity(0.1)))
                     }
                     ForEach(tags) { TagChip(tag: $0) }
                     if let via { ViaChip(label: via) }
@@ -746,7 +774,9 @@ struct Reader: View {
     let snooze: (Message, Date?, Bool) -> Void
     let reply: () -> Void
     let tag: () -> Void
+    let model: AppModel
     @Local private var html: String?
+    @Local private var quick: [QuickItem] = []
 
     var initials: String {
         let name = message.fromName.isEmpty ? message.fromAddr : message.fromName
@@ -787,10 +817,12 @@ struct Reader: View {
             }
             .padding(.top, 16)
 
+            if !quick.isEmpty { QuickStrip(items: quick, model: model).padding(.top, 20) }
+
             Group {
                 if let html { MessageWebView(html: html) } else { Spacer() }
             }
-            .padding(.top, 24)
+            .padding(.top, quick.isEmpty ? 24 : 16)
 
             HStack(spacing: 16) {
                 hint("e", "archive"); hint("l", "reply later"); hint("h", "snooze"); hint("r", "reply"); hint("/", "search"); hint("⌘K", "command")
@@ -800,7 +832,10 @@ struct Reader: View {
         .font(.body13)
         .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .task { html = render() }
+        .task {
+            html = render()
+            quick = (try? store.quickItems(message.id ?? -1)) ?? []
+        }
     }
 
     func tool(_ icon: String, _ help: String, _ action: @escaping () -> Void) -> some View {

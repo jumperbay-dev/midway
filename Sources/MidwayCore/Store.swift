@@ -308,6 +308,23 @@ public final class Store: Sendable {
             try db.execute(sql: "INSERT OR IGNORE INTO screener (address, decision) SELECT DISTINCT fromAddr, 'allow' FROM message")
             try db.execute(sql: "INSERT OR IGNORE INTO screener (address, decision) SELECT address, 'allow' FROM contact WHERE sent > 0")
         }
+        m.registerMigration("v6-quick") { db in
+            try db.create(table: "quick_item") { t in
+                t.column("messageId", .integer).notNull().references("message", onDelete: .cascade)
+                t.column("kind", .text).notNull()
+                t.column("value", .text).notNull()
+                t.column("label", .text).notNull()
+                t.column("url", .text)
+                t.column("date", .datetime).notNull().indexed()
+                t.column("delivered", .boolean).notNull().defaults(to: false)
+                t.primaryKey(["messageId", "kind", "value"])
+            }
+            // Oldest first, so a later "delivered" mail clears the parcels before it.
+            for r in try Row.fetchAll(db, sql: "SELECT id, blob, date FROM message ORDER BY date") {
+                guard let raw = try? Data(contentsOf: blobURL(blobs, r["blob"])) else { continue }
+                try noteQuick(r["id"], MIME.parse(raw), date: r["date"], db)
+            }
+        }
         return m
     }
 
@@ -376,6 +393,7 @@ public final class Store: Sendable {
             try Self.index(id, p, account: email, date: m.date, db)
             try Self.wakeSnoozed(answeredBy: p, thread: state.gmThrId, db)
             try Self.screenAndTag(id, from: p.from.address, account: email, db)
+            try Self.noteQuick(id, p, date: m.date, db)
         }
     }
 

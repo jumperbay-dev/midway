@@ -27,3 +27,24 @@ let gmail: [(Int64, Bool, [String], Data)] = [
 ]
 for (uid, seen, labels, raw) in gmail { try store.insert(raw: raw, uid: uid, state: .init(seen: seen, labels: labels), account: g.id!, mailbox: all) }
 print("seeded")
+
+// Quick access: a fresh code, a parcel, key links and a booking.
+let f = DateFormatter()
+f.locale = Locale(identifier: "en_US_POSIX")
+f.dateFormat = "EEE, d MMM yyyy HH:mm:ss Z"
+func ago(_ s: TimeInterval) -> String { f.string(from: Date.now.addingTimeInterval(-s)) }
+let plain = "text/plain; charset=utf-8"
+let quick: [(Int64, Data)] = [
+  (6, mail("Example <security@example.com>", "Your sign-in code", ago(60), plain, "Your verification code is 482913. It expires in 15 minutes.")),
+  (7, mail("Lumen Studio <orders@lumen.example>", "Your order #2291 has shipped", ago(7200), plain, "Good news! Tracking number: 1Z999AA10123456784\nThanks for shopping with us.")),
+  (8, mail("Tidewater Review <hello@tidewater.example>", "Issue 49: spring tides", ago(10800), "text/html; charset=utf-8\r\nList-Unsubscribe: <https://tidewater.example/u/1>",
+           "<p>This week: spring tides.</p><p><a href='https://tidewater.example/confirm?t=9'>Confirm your email</a> · <a href='https://tidewater.example/u/1'>Unsubscribe</a></p>")),
+  (9, mail("Marta Ek <marta@ek.example>", "Standup moved to 10:30", ago(14400), plain, "Join here: https://us02web.zoom.us/j/123456789?pwd=abc\nSee you then.")),
+  (10, mail("Fjord Hotels <stay@fjordhotels.example>", "Your stay in Bergen, 3-5 Dec", ago(20000), plain, "Booking reference: KXPTQR\nCheck-in from 15:00.")),
+]
+for (uid, raw) in quick { try store.insert(raw: raw, uid: uid, state: .init(seen: false, labels: [Label.inbox]), account: a.id!, mailbox: "INBOX") }
+// Everyone but Tidewater is let through, so the Screener has one sender waiting.
+for addr in ["booking@nordicrail.example", "statements@kestrel.example", "ada@example.com", "mum@example.com", "jonas@example.com",
+             "mira@example.com", "no-reply@fjordair.example", "stay@bryggen.example", "security@example.com", "orders@lumen.example",
+             "marta@ek.example", "stay@fjordhotels.example"] { try store.decide(addr, allow: true) }
+print("seeded quick access")

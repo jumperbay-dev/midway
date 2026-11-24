@@ -8,6 +8,8 @@ public struct Account: Codable, Hashable, Sendable, FetchableRecord, MutablePers
     public var imapHost: String
     public var imapPort: Int
     public var kind: Kind
+    /// Whether this account's mail may go to an AI engine. Off until the user turns it on.
+    public var ai = false
 
     public enum Kind: String, Codable, Sendable {
         /// App password over LOGIN (Fastmail).
@@ -325,6 +327,7 @@ public final class Store: Sendable {
                 try noteQuick(r["id"], MIME.parse(raw), date: r["date"], db)
             }
         }
+        m.registerMigration("v7-ai") { db in try migrateAI(db) }
         return m
     }
 

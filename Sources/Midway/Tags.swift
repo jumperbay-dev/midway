@@ -35,6 +35,8 @@ struct TagPicker: View {
     let applied: Set<Int64>
     let pick: (Tag, Bool) -> Void
     let close: () -> Void
+    /// The message being tagged, for Claude's suggestions.
+    var message: Message?
     @Local private var text = ""
     @Local private var index = 0
     @Local private var tags: [Tag] = []
@@ -73,6 +75,18 @@ struct TagPicker: View {
                 }
                 .padding(.horizontal, 12).frame(height: 44)
                 .overlay(alignment: .bottom) { Rectangle().fill(T.line).frame(height: 1) }
+
+                if let message {
+                    TagSuggest(model: model, message: message, pick: { name in
+                        guard let tag = tags.first(where: { $0.name.lowercased() == name.lowercased() }) ?? (try? model.store?.createTag(name)) else { return }
+                        close(); pick(tag, false)
+                    }, rule: { query, name in
+                        guard let store = model.store, let tag = tags.first(where: { $0.name.lowercased() == name.lowercased() }) ?? (try? store.createTag(name)), let id = tag.id else { return }
+                        _ = try? store.addRule(query, tag: id)
+                        _ = try? store.rerun(tag: id)
+                        close(); model.notice = "Rule added: \(query) → \(tag.name)"
+                    })
+                }
 
                 VStack(alignment: .leading, spacing: 0) {
                     let all = items

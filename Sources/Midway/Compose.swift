@@ -30,6 +30,7 @@ struct ComposeView: View {
             if draft != nil {
                 VStack(alignment: .leading, spacing: 0) {
                     fields
+                    if let draft { ComposeAI(model: model, draft: draft, body_: $body_) }
                     RichTextEditor(text: $body_).padding(.top, 16)
                     footer
                 }

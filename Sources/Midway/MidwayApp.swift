@@ -42,6 +42,8 @@ struct MidwayApp: App {
             }
         }
 
+        Settings { AISettings(model: model) }
+
         // Compose opens as its own window, one per draft.
         WindowGroup("New message", id: "compose", for: Int64.self) { $draft in
             if let draft = draft { ComposeView(model: model, draftId: draft) }
@@ -71,6 +73,16 @@ final class AppModel {
     /// Takes back the last action (archive, star, a pile, a snooze…), for ⌘Z.
     var undoLast: (() -> Void)?
     private var tasks: [Task<Void, Never>] = []
+    /// AI through the claude CLI: what was found, the summary card, and the run Esc stops.
+    let ai: AIRunner
+    var engine: Engine.Detection?
+    var aiCard: AICard?
+    var aiTask: Task<Void, Never>?
+    /// Which message a reply draft answers, for Claude: mail without a Message-ID can't be found from the draft.
+    var replySource: [Int64: Int64] = [:]
+    var aiPath = UserDefaults.standard.string(forKey: "aiPath") ?? "" { didSet { UserDefaults.standard.set(aiPath, forKey: "aiPath") } }
+    var aiModel = UserDefaults.standard.string(forKey: "aiModel") ?? "sonnet" { didSet { UserDefaults.standard.set(aiModel, forKey: "aiModel") } }
+    var aiRedact = UserDefaults.standard.object(forKey: "aiRedact") as? Bool ?? true { didSet { UserDefaults.standard.set(aiRedact, forKey: "aiRedact") } }
 
     init() {
         do {
@@ -79,6 +91,7 @@ final class AppModel {
             store = nil
             fatal = "Could not open the mail store: \(error)"
         }
+        ai = AIRunner(store: store)
         for a in (try? store?.accounts()) ?? [] { start(a) }
         if let store {
             let o = Outbox(store: store) { [weak self] id in
@@ -90,6 +103,7 @@ final class AppModel {
             outbox = o
             tasks.append(Task { await o.run() })
         }
+        tasks.append(Task { await detectAI() })
     }
 
     /// Fastmail by default; anything else gets imap.<domain>, editable on the Add account screen.
@@ -255,7 +269,9 @@ final class AppModel {
             let who = m.fromName.isEmpty ? m.fromAddr : m.fromName
             d.rtf = RichText.rtf("\n\nOn \(m.date.formatted(date: .abbreviated, time: .shortened)), \(who) wrote:\n\(quoted)")
         }
-        return (try? store.save(d))?.id
+        let saved = try? store.save(d)
+        if let id = saved?.id, let source = m?.id { replySource[id] = source }
+        return saved?.id
     }
 
     /// Builds the message and leaves it in the outbox for the 10-second undo window.

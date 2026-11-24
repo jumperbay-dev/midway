@@ -37,6 +37,17 @@ Done so far:
    30 days). Go ▸ Copy Latest Code is ⌥⌘C; codes go to the pasteboard marked concealed.
 
    Not yet: a system-wide shortcut for the latest code, "Find things in this mail" with AI, unwrapping tracking redirects.
+7. **Claude**: AI through the `claude` CLI you already have. midway holds no keys. Settings ▸ AI engines (`⌘,`) finds
+   the binary through your login shell (or a path you choose), checks the version and the sign-in, runs a test on a
+   built-in sample, previews exactly what would be sent, and turns AI on per account. It is off for every account until
+   you turn it on. In the reader, `a` (or Ask AI) pins a thread summary with "Asked of you" to-dos and, when a date is
+   settled, "Add to calendar" (an `.ics` for Calendar). Esc stops a run. In a reply, a one-line intent and Draft stream a
+   suggestion; Polish, Shorter and Warmer rewrite it. Nothing reaches the body until Use draft (`⌘⇧↩`). The tag
+   picker can suggest tags and a rule. Each run gets the prompt on stdin, an empty temporary folder and only `PATH`,
+   `HOME`, `LANG` and `USER`, with tools, MCP servers, settings files and session saving off, and a 60 s timeout.
+   Addresses and phone numbers are redacted by default. The run log keeps task, size, time and cost, never content.
+
+   Not yet: Codex and a default engine per action, "Ask your mail", Claude in Focus and reply, AI in the Screener.
 
 Builds with the Command Line Tools alone (no Xcode, no CI).
 

@@ -144,7 +144,8 @@ struct MailView: View {
         .onKeyPress(characters: ["j", "k"]) { press in step(press.characters == "j" ? 1 : -1); return .handled }
         .onKeyPress(.downArrow) { step(1); return .handled }
         .onKeyPress(.upArrow) { step(-1); return .handled }
-        .onKeyPress(characters: ["e", "#", "s", "u", "r", "c", "/", "l", "y", "h", "z", "g", "i", "?", "t"]) { press in key(press) }
+        .onKeyPress(characters: ["e", "#", "s", "u", "r", "c", "/", "l", "y", "h", "z", "g", "i", "?", "t", "a"]) { press in key(press) }
+        .onKeyPress(.escape) { guard model.aiCard != nil else { return .ignored }; model.cancelAI(); return .handled }
         .onChange(of: selected) { if let current { model.open(current) } }
         .onChange(of: box) { selected = nil; model.mode = .mail; focused = true }
         .task(id: [box, now] as [AnyHashable]) { await observe() }
@@ -175,6 +176,7 @@ struct MailView: View {
         case "r": if let current { compose(current) }
         case "h": if current != nil { snoozing = true }
         case "t": if let current { tagging = .message(current) }
+        case "a": if let current { model.summarise(current) }
         case "e", "#", "s", "u", "l", "y":
             guard let current else { return .ignored }
             switch c {
@@ -238,8 +240,9 @@ struct MailView: View {
         case .message(let m): ("1 message", Set((tagsByKey[m.key ?? ""] ?? []).compactMap(\.id)))
         case .sender(let a): ("all from \(a)", [])
         }
+        var message: Message? { if case .message(let m) = target { m } else { nil } }
         return TagPicker(model: model, title: title, applied: applied, pick: { tag, rule in applyTag(target, tag, rule: rule) },
-                         close: { tagging = nil; focused = true })
+                         close: { tagging = nil; focused = true }, message: message)
     }
 
     /// One message: toggles the tag, and ⌘↩ adds a from: rule. A sender: always a rule, run over their mail now.
@@ -277,6 +280,7 @@ struct MailView: View {
                 .init(group: group, title: p?.setAside == true ? "Remove from Set aside" : "Set aside", key: "y") { pile(.setAside, m) },
                 .init(group: group, title: "Snooze…", key: "h") { snoozing = true },
                 .init(group: group, title: "Tag…", key: "t") { tagging = .message(m) },
+                .init(group: group, title: "Summarise with Claude", key: "a") { model.summarise(m) },
                 .init(group: group, title: m.flagged ? "Unstar" : "Star", key: "s") { act(.flagged, m) },
                 .init(group: group, title: m.seen ? "Mark unread" : "Mark read", key: "u") { act(.seen, m) },
                 .init(group: group, title: "Delete", key: "#") { act(.trash, m) },
@@ -799,6 +803,8 @@ struct Reader: View {
                 tool(message.seen ? "envelope.badge" : "envelope.open", message.seen ? "Mark unread (u)" : "Mark read (u)") { act(.seen, message) }
                 Spacer()
                 tool("arrowshape.turn.up.left", "Reply (r)", reply)
+                Button { model.summarise(message) } label: { HStack(spacing: 6) { Image(systemName: "sparkle"); Text("Ask AI"); Kbd(key: "a") } }
+                    .buttonStyle(PrimaryButton()).help("Summary and what is asked of you (a)")
             }
             .padding(.top, -12).padding(.trailing, -16).padding(.bottom, 16)
             Text(message.subject.isEmpty ? "(no subject)" : message.subject).font(.h2).textSelection(.enabled)
@@ -817,6 +823,9 @@ struct Reader: View {
             }
             .padding(.top, 16)
 
+            if let card = model.aiCard, card.messageId == message.id {
+                AICardView(card: card, model: model, reply: reply).padding(.top, 20)
+            }
             if !quick.isEmpty { QuickStrip(items: quick, model: model).padding(.top, 20) }
 
             Group {

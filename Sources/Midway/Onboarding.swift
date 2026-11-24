@@ -31,8 +31,10 @@ struct AddAccount: View {
     @Local private var password = ""
     @Local private var busy = false
     @Local private var error: String?
+    @Local private var signing: Task<Void, Never>?
 
     var isFastmail: Bool { host == "imap.fastmail.com" }
+    var isGmail: Bool { AppModel.isGmail(email) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -43,17 +45,11 @@ struct AddAccount: View {
                         .font(.system(size: 13, design: .monospaced))
                         .onChange(of: email) { host = AppModel.imapHost(for: email) }
                 }
-                if email.contains("@") {
+                if isGmail {
+                    provider("G", 0xEE8F72, "Google account detected", "Sign in opens in your browser. midway never sees your password.")
+                } else if email.contains("@") {
                     if isFastmail {
-                        HStack(spacing: 12) {
-                            Text("F").font(.system(size: 13, weight: .semibold)).foregroundStyle(Color(hex: 0x6AB2EC))
-                                .frame(width: 32, height: 32).background(RoundedRectangle(cornerRadius: 9).fill(Color(hex: 0x6AB2EC).opacity(0.15)))
-                            VStack(alignment: .leading) {
-                                Text("Fastmail detected").fontWeight(.semibold)
-                                Text("Use an app password from Fastmail → Settings → Privacy & Security. It is kept in your Keychain.")
-                                    .font(.meta12).foregroundStyle(T.faint)
-                            }
-                        }
+                        provider("F", 0x6AB2EC, "Fastmail detected", "Use an app password from Fastmail → Settings → Privacy & Security. It is kept in your Keychain.")
                     } else {
                         field("IMAP server") { TextField("", text: $host).font(.system(size: 13, design: .monospaced)) }
                     }
@@ -68,13 +64,36 @@ struct AddAccount: View {
             .padding(32)
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(T.line))
 
+            Text("Or choose a provider").font(.label11).foregroundStyle(T.faint)
+                .frame(maxWidth: .infinity).padding(.top, 24)
+            // Google Workspace addresses use custom domains, so Gmail is also offered by name.
+            Button { start { try await model.addGoogle(loginHint: nil) } } label: {
+                HStack(spacing: 12) {
+                    badge("G", 0xEE8F72)
+                    Text("Gmail or Google Workspace")
+                    Spacer()
+                }
+                .padding(12).frame(width: 280)
+                .background(RoundedRectangle(cornerRadius: 6).fill(T.surface))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(T.line))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).disabled(busy)
+            .frame(maxWidth: .infinity).padding(.top, 12)
+
             HStack {
-                Button("Back", action: back).buttonStyle(GhostButton())
+                Button("Back") { signing?.cancel(); back() }.buttonStyle(GhostButton())
                 Spacer()
-                if busy { ProgressView().controlSize(.small) }
-                Button("Sign in") { Task { await signIn() } }
+                if busy {
+                    ProgressView().controlSize(.small)
+                    if signing != nil {
+                        Text("Waiting for your browser…").font(.meta12).foregroundStyle(T.muted)
+                        Button("Cancel") { signing?.cancel() }.buttonStyle(GhostButton())
+                    }
+                }
+                Button("Sign in") { signIn() }
                     .buttonStyle(PrimaryButton()).keyboardShortcut(.defaultAction)
-                    .disabled(busy || !email.contains("@") || password.isEmpty || host.isEmpty)
+                    .disabled(busy || !email.contains("@") || (!isGmail && (password.isEmpty || host.isEmpty)))
             }
             .padding(.top, 24)
         }
@@ -101,14 +120,42 @@ struct AddAccount: View {
         }
     }
 
-    func signIn() async {
+    func provider(_ letter: String, _ color: UInt32, _ title: String, _ detail: String) -> some View {
+        HStack(spacing: 12) {
+            badge(letter, color)
+            VStack(alignment: .leading) {
+                Text(title).fontWeight(.semibold)
+                Text(detail).font(.meta12).foregroundStyle(T.faint)
+            }
+        }
+    }
+
+    func badge(_ letter: String, _ color: UInt32) -> some View {
+        Text(letter).font(.system(size: 13, weight: .semibold)).foregroundStyle(Color(hex: color))
+            .frame(width: 32, height: 32).background(RoundedRectangle(cornerRadius: 9).fill(Color(hex: color).opacity(0.15)))
+    }
+
+    func signIn() {
+        let address = email.trimmingCharacters(in: .whitespaces)
+        if isGmail {
+            start { try await model.addGoogle(loginHint: address) }
+        } else {
+            busy = true
+            error = nil
+            Task {
+                defer { busy = false }
+                do { try await model.add(email: address, host: host, password: password) } catch { self.error = error.localizedDescription }
+            }
+        }
+    }
+
+    /// Google sign-in waits on the browser, so it can be cancelled.
+    func start(_ work: @escaping @MainActor () async throws -> Void) {
         busy = true
         error = nil
-        defer { busy = false }
-        do {
-            try await model.add(email: email.trimmingCharacters(in: .whitespaces), host: host, password: password)
-        } catch {
-            self.error = error.localizedDescription
+        signing = Task {
+            defer { busy = false; signing = nil }
+            do { try await work() } catch is CancellationError {} catch { self.error = (error as? LocalizedError)?.errorDescription ?? String(describing: error) }
         }
     }
 }

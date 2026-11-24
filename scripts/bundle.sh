@@ -3,6 +3,11 @@
 # Developer ID signing and notarization come with the Ship milestone.
 set -eu
 cd "$(dirname "$0")/.."
+# Google OAuth client for Gmail, kept out of git (see config/Google.example.xcconfig).
+if [ -f config/Google.xcconfig ]; then
+  GOOGLE_CLIENT_ID=$(sed -n 's/^GOOGLE_CLIENT_ID *= *//p' config/Google.xcconfig)
+  GOOGLE_CLIENT_SECRET=$(sed -n 's/^GOOGLE_CLIENT_SECRET *= *//p' config/Google.xcconfig)
+fi
 swift build -c release --product midway
 app=build/midway.app
 rm -rf "$app" && mkdir -p "$app/Contents/MacOS"
@@ -19,6 +24,8 @@ cat > "$app/Contents/Info.plist" <<PLIST
   <key>CFBundleVersion</key><string>1</string>
   <key>LSMinimumSystemVersion</key><string>15.0</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>GoogleClientID</key><string>${GOOGLE_CLIENT_ID:-}</string>
+  <key>GoogleClientSecret</key><string>${GOOGLE_CLIENT_SECRET:-}</string>
 </dict></plist>
 PLIST
 codesign --force --options runtime --sign - "$app"

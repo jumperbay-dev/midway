@@ -14,5 +14,16 @@ let msgs: [(Int64, Bool, Data)] = [
   (2, true, mail("Mum <mum@example.com>", "Photos from the coast", "Sun, 22 Nov 2026 12:00:00 +0100", "text/plain; charset=utf-8", "The boat trip ones turned out lovely, I put them in the shared album.")),
   (1, true, mail("Jonas <jonas@example.com>", "Christmas plans", "Wed, 18 Nov 2026 19:00:00 +0100", "text/plain; charset=utf-8", "Are we doing the cabin again this year or somewhere new?")),
 ]
-for (uid, seen, raw) in msgs { try store.insert(raw: raw, uid: uid, seen: seen, account: a.id!, mailbox: "INBOX") }
+for (uid, seen, raw) in msgs { try store.insert(raw: raw, uid: uid, state: .init(seen: seen, labels: [Label.inbox]), account: a.id!, mailbox: "INBOX") }
+
+let g = try store.add(.gmail("me@gmail.com"))
+let all = "[Gmail]/All Mail"
+_ = try store.prepareMailbox(account: g.id!, name: all, uidValidity: 1)
+let gmail: [(Int64, Bool, [String], Data)] = [
+  (12, false, [Label.inbox, "Family"], mail("Mira <mira@example.com>", "Cardamom buns recipe", "Tue, 24 Nov 2026 07:30:00 +0100", "text/plain; charset=utf-8", "Here it is. Use less salt than it says.")),
+  (11, false, [Label.inbox, "Travel", "\\Important"], mail("Fjord Air <no-reply@fjordair.example>", "Check-in is open for BGO → OSL", "Mon, 23 Nov 2026 10:00:00 +0100", "text/plain; charset=utf-8", "Flight FA 612 departs Bergen 18:05 on 4 December.")),
+  (10, true, ["Travel"], mail("Hotel Bryggen <stay@bryggen.example>", "Booking confirmed", "Fri, 20 Nov 2026 14:00:00 +0100", "text/plain; charset=utf-8", "Two nights from 3 December. Breakfast included.")),
+  (9, true, ["\\Sent"], mail("Me <me@gmail.com>", "Re: Dinner on Friday?", "Mon, 23 Nov 2026 12:05:00 +0100", "text/plain; charset=utf-8", "Sounds great, count me in.")),
+]
+for (uid, seen, labels, raw) in gmail { try store.insert(raw: raw, uid: uid, state: .init(seen: seen, labels: labels), account: g.id!, mailbox: all) }
 print("seeded")

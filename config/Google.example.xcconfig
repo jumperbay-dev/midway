@@ -1,0 +1,4 @@
+// Copy to config/Google.xcconfig (git-ignored) and fill in the Desktop OAuth client
+// from console.cloud.google.com (steps in the design doc, "Google Cloud setup").
+GOOGLE_CLIENT_ID = 1234567890-abc.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET = GOCSPX-replace-me

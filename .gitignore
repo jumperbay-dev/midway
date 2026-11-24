@@ -1,5 +1,5 @@
 .build/
 build/
 .swiftpm/
-*.xcconfig
+config/Google.xcconfig
 .DS_Store

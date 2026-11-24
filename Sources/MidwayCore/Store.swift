@@ -7,11 +7,24 @@ public struct Account: Codable, Hashable, Sendable, FetchableRecord, MutablePers
     public var email: String
     public var imapHost: String
     public var imapPort: Int
+    public var kind: Kind
 
-    public init(email: String, imapHost: String, imapPort: Int = 993) {
+    public enum Kind: String, Codable, Sendable {
+        /// App password over LOGIN (Fastmail).
+        case password
+        /// OAuth refresh token, XOAUTH2, [Gmail]/All Mail with labels.
+        case google
+    }
+
+    public init(email: String, imapHost: String, imapPort: Int = 993, kind: Kind = .password) {
         self.email = email
         self.imapHost = imapHost
         self.imapPort = imapPort
+        self.kind = kind
+    }
+
+    public static func gmail(_ email: String) -> Account {
+        Account(email: email, imapHost: "imap.gmail.com", kind: .google)
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
@@ -33,8 +46,15 @@ public struct Message: Codable, Hashable, Sendable, Identifiable, FetchableRecor
     /// Seen changed locally and not yet stored on the server.
     public var seenDirty: Bool
     public var blob: String
+    public var gmMsgId: Int64?
+    public var gmThrId: Int64?
 
     public mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
+}
+
+public enum Label {
+    /// The label every view of "Inbox" is built on, for IMAP folders and Gmail alike.
+    public static let inbox = "\\Inbox"
 }
 
 /// One SQLite database (GRDB, WAL) plus content-addressed raw messages, as in the design doc's Storage section.
@@ -93,6 +113,20 @@ public final class Store: Sendable {
                 t.uniqueKey(["accountId", "mailbox", "uid"])
             }
         }
+        m.registerMigration("v2-gmail") { db in
+            try db.alter(table: "account") { t in t.add(column: "kind", .text).notNull().defaults(to: "password") }
+            try db.alter(table: "message") { t in
+                t.add(column: "gmMsgId", .integer)
+                t.add(column: "gmThrId", .integer)
+            }
+            // Views are label queries: Fastmail's INBOX is the \Inbox label, Gmail's come from X-GM-LABELS.
+            try db.create(table: "label") { t in
+                t.column("messageId", .integer).notNull().references("message", onDelete: .cascade)
+                t.column("name", .text).notNull().indexed()
+                t.primaryKey(["messageId", "name"])
+            }
+            try db.execute(sql: "INSERT INTO label (messageId, name) SELECT id, ? FROM message WHERE mailbox = 'INBOX'", arguments: [Label.inbox])
+        }
         return m
     }
 
@@ -126,7 +160,22 @@ public final class Store: Sendable {
         }
     }
 
-    public func insert(raw: Data, uid: Int64, seen: Bool, account: Int64, mailbox: String) throws {
+    /// What the server says about one message, from a FETCH.
+    public struct ServerState: Sendable {
+        public var seen: Bool
+        public var labels: [String]
+        public var gmMsgId: Int64?
+        public var gmThrId: Int64?
+
+        public init(seen: Bool, labels: [String], gmMsgId: Int64? = nil, gmThrId: Int64? = nil) {
+            self.seen = seen
+            self.labels = labels
+            self.gmMsgId = gmMsgId
+            self.gmThrId = gmThrId
+        }
+    }
+
+    public func insert(raw: Data, uid: Int64, state: ServerState, account: Int64, mailbox: String) throws {
         let hash = try writeBlob(raw)
         let p = MIME.parse(raw)
         try db.write { db in
@@ -134,17 +183,27 @@ public final class Store: Sendable {
                 accountId: account, mailbox: mailbox, uid: uid, messageId: p.messageId,
                 fromName: p.from.name, fromAddr: p.from.address, toAddr: p.to.address,
                 subject: p.subject, date: p.date ?? .now, preview: p.preview,
-                seen: seen, seenDirty: false, blob: hash)
+                seen: state.seen, seenDirty: false, blob: hash, gmMsgId: state.gmMsgId, gmThrId: state.gmThrId)
             try m.insert(db, onConflict: .ignore)
+            if let id = m.id { try setLabels(state.labels, message: id, db) }
         }
     }
 
-    /// Server flags win, except for rows with a local change still waiting to be stored.
-    public func updateSeen(_ seen: [Int64: Bool], account: Int64, mailbox: String) throws {
+    /// Server flags and labels win, except seen on rows with a local change still waiting to be stored.
+    public func update(_ states: [Int64: ServerState], account: Int64, mailbox: String) throws {
         try db.write { db in
-            for (uid, s) in seen {
-                try db.execute(sql: "UPDATE message SET seen = ? WHERE accountId = ? AND mailbox = ? AND uid = ? AND seenDirty = 0", arguments: [s, account, mailbox, uid])
+            for (uid, s) in states {
+                guard let id = try Int64.fetchOne(db, sql: "SELECT id FROM message WHERE accountId = ? AND mailbox = ? AND uid = ?", arguments: [account, mailbox, uid]) else { continue }
+                try db.execute(sql: "UPDATE message SET seen = ? WHERE id = ? AND seenDirty = 0", arguments: [s.seen, id])
+                try setLabels(s.labels, message: id, db)
             }
+        }
+    }
+
+    func setLabels(_ labels: [String], message: Int64, _ db: Database) throws {
+        try db.execute(sql: "DELETE FROM label WHERE messageId = ?", arguments: [message])
+        for name in Set(labels) {
+            try db.execute(sql: "INSERT INTO label (messageId, name) VALUES (?, ?)", arguments: [message, name])
         }
     }
 

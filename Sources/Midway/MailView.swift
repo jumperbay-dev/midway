@@ -68,7 +68,7 @@ enum Box: Hashable {
 
 /// What covers the three panes, if anything.
 enum Mode: Equatable {
-    case mail, search, focus, keys
+    case mail, search, focus, keys, calendar
 }
 
 /// Screen 01: sidebar 232, list 360, reader fills the rest. The keyboard does the rest.
@@ -105,6 +105,8 @@ struct MailView: View {
                 FocusView(model: model, close: { model.mode = .mail; focused = true })
             case .keys:
                 KeyboardMap(close: { model.mode = .mail; focused = true })
+            case .calendar:
+                CalendarView(model: model)
             case .mail, .search:
                 HStack(spacing: 0) {
                     Sidebar(model: model, box: $box, now: now, compose: { compose(nil) })
@@ -622,6 +624,7 @@ struct Sidebar: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 4) {
+                ModeSwitch(model: model)
                 Button(action: compose) {
                     HStack { Label("New message", systemImage: "square.and.pencil"); Spacer(); Kbd(key: "c") }
                         .padding(.horizontal, 12).frame(height: 32).contentShape(Rectangle())
@@ -781,6 +784,7 @@ struct Reader: View {
     let model: AppModel
     @Local private var html: String?
     @Local private var quick: [QuickItem] = []
+    @Local private var invite: String?
 
     var initials: String {
         let name = message.fromName.isEmpty ? message.fromAddr : message.fromName
@@ -827,6 +831,9 @@ struct Reader: View {
                 AICardView(card: card, model: model, reply: reply).padding(.top, 20)
             }
             if !quick.isEmpty { QuickStrip(items: quick, model: model).padding(.top, 20) }
+            if let invite, case let p = ICal.parse(invite), let e = p.events.first {
+                InviteCard(model: model, message: message, ics: invite, event: e, method: p.method ?? "REQUEST").padding(.top, 20)
+            }
 
             Group {
                 if let html { MessageWebView(html: html) } else { Spacer() }
@@ -844,6 +851,7 @@ struct Reader: View {
         .task {
             html = render()
             quick = (try? store.quickItems(message.id ?? -1)) ?? []
+            invite = (try? store.raw(message)).flatMap { MIME.parse($0).calendar }
         }
     }
 

@@ -33,6 +33,9 @@ struct MidwayApp: App {
         .commands {
             TextFormattingCommands()
             CommandMenu("Go") {
+                Button("Mail") { model.mode = .mail }.keyboardShortcut("1")
+                Button("Calendar") { model.mode = .calendar }.keyboardShortcut("2")
+                Divider()
                 Button("Command Bar") { model.commandBar = true }.keyboardShortcut("k")
                 Button("Focus and Reply") { model.mode = .focus }.keyboardShortcut(".")
                 Button("Search") { model.mode = .search }.keyboardShortcut("f")
@@ -80,6 +83,11 @@ final class AppModel {
     var aiTask: Task<Void, Never>?
     /// Which message a reply draft answers, for Claude: mail without a Message-ID can't be found from the draft.
     var replySource: [Int64: Int64] = [:]
+    var calSyncers: [Int64: CalendarSync] = [:]
+    var calState: [Int64: CalendarSync.State] = [:]
+    var calTasks: [Task<Void, Never>] = []
+    var calFocus = Date.now
+    var editing: EventDraft?
     var aiPath = UserDefaults.standard.string(forKey: "aiPath") ?? "" { didSet { UserDefaults.standard.set(aiPath, forKey: "aiPath") } }
     var aiModel = UserDefaults.standard.string(forKey: "aiModel") ?? "sonnet" { didSet { UserDefaults.standard.set(aiModel, forKey: "aiModel") } }
     var aiRedact = UserDefaults.standard.object(forKey: "aiRedact") as? Bool ?? true { didSet { UserDefaults.standard.set(aiRedact, forKey: "aiRedact") } }
@@ -104,7 +112,13 @@ final class AppModel {
             tasks.append(Task { await o.run() })
         }
         tasks.append(Task { await detectAI() })
+        // Calendars refresh when midway comes to the front, besides every 5 minutes.
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.wakeCalendars() }
+        }
     }
+
+    func wakeOutbox() { outbox?.wake() }
 
     /// Fastmail by default; anything else gets imap.<domain>, editable on the Add account screen.
     static func imapHost(for email: String) -> String {
@@ -168,6 +182,7 @@ final class AppModel {
         }
         syncers[id] = s
         tasks.append(Task { await s.run() })
+        startCalendars(account, credentials)
     }
 
     func open(_ message: Message) {

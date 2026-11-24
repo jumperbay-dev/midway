@@ -34,6 +34,8 @@ public enum MIME {
         public var messageId: String?
         public var html: String?
         public var text: String?
+        /// The iCalendar part of an invitation (text/calendar, inline or as an .ics attachment).
+        public var calendar: String?
         public var preview: String {
             let src = text ?? html.map(stripTags) ?? ""
             let flat = src.split(whereSeparator: \.isWhitespace).joined(separator: " ")
@@ -108,6 +110,10 @@ public enum MIME {
     static func walk(headers: [String: String], body: Data, into p: inout Parsed, depth: Int = 0) {
         guard depth < 8 else { return }
         let (type, params) = contentType(headers["content-type"])
+        if type == "text/calendar" || type == "application/ics" {
+            if p.calendar == nil { p.calendar = string(transferDecode(body, encoding: headers["content-transfer-encoding"]), charset: params["charset"]) }
+            return
+        }
         if headers["content-disposition"]?.lowercased().hasPrefix("attachment") == true { return }
         if type.hasPrefix("multipart/"), let boundary = params["boundary"] {
             for part in parts(body, boundary: boundary) {

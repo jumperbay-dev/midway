@@ -57,12 +57,6 @@ extension AppModel {
         aiCard = nil
     }
 
-    func addToCalendar(_ e: AI.Event) {
-        guard let ics = e.ics() else { notice = "Could not read the date “\(e.start)”"; return }
-        let url = FileManager.default.temporaryDirectory.appending(path: "midway-\(UUID().uuidString).ics")
-        guard (try? ics.write(to: url, atomically: true, encoding: .utf8)) != nil else { return }
-        NSWorkspace.shared.open(url)
-    }
 }
 
 struct AICardView: View {

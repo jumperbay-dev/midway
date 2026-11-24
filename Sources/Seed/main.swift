@@ -48,3 +48,38 @@ for addr in ["booking@nordicrail.example", "statements@kestrel.example", "ada@ex
              "mira@example.com", "no-reply@fjordair.example", "stay@bryggen.example", "security@example.com", "orders@lumen.example",
              "marta@ek.example", "stay@fjordhotels.example"] { try store.decide(addr, allow: true) }
 print("seeded quick access")
+
+// Calendars: two on Fastmail, one on Gmail, events around today, and an invitation that clashes.
+let cal = Calendar.current
+let today = cal.startOfDay(for: .now)
+func t(_ day: Int, _ h: Int, _ m: Int = 0) -> String {
+  let d = cal.date(byAdding: .minute, value: day * 1440 + h * 60 + m, to: today)!
+  return ICal.stamp(d)
+}
+func vevent(_ uid: String, _ title: String, _ s: String, _ e: String, _ extra: String = "") -> String {
+  "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:seed\r\nBEGIN:VEVENT\r\nUID:\(uid)\r\nDTSTAMP:\(s)\r\nSUMMARY:\(title)\r\nDTSTART:\(s)\r\nDTEND:\(e)\r\n\(extra)END:VEVENT\r\nEND:VCALENDAR\r\n"
+}
+let cals = try store.saveCalendars(account: a.id!, [
+  .init(url: URL(string: "https://caldav.fastmail.com/dav/calendars/user/me@fastmail.com/personal/")!, name: "Personal", colour: "#62C792", ctag: "1", writable: true),
+  .init(url: URL(string: "https://caldav.fastmail.com/dav/calendars/user/me@fastmail.com/work/")!, name: "Work", colour: "#5B8DEF", ctag: "1", writable: true),
+]) + store.saveCalendars(account: g.id!, [
+  .init(url: URL(string: "https://apidata.googleusercontent.com/caldav/v2/me@gmail.com/events/")!, name: "me@gmail.com", colour: "#E8A33D", ctag: "1", writable: true),
+])
+func res(_ c: CalendarRow, _ uid: String, _ ics: String) -> CalDAV.Resource { .init(href: URL(string: c.url)!.path(percentEncoded: true) + uid + ".ics", etag: "\"1\"", ics: ics) }
+try store.storeEvents(calendar: cals[0].id!, [
+  res(cals[0], "dinner", vevent("dinner", "Dinner with Ada", t(2, 19), t(2, 21, 30), "LOCATION:Lysverket\r\n")),
+  res(cals[0], "run", vevent("run", "Run", t(-2, 7), t(-2, 8), "RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR\r\n")),
+  res(cals[0], "bergen", "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:bergen\r\nSUMMARY:Bergen\r\nDTSTART;VALUE=DATE:\(String(t(8, 0).prefix(8)))\r\nDTEND;VALUE=DATE:\(String(t(10, 0).prefix(8)))\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"),
+])
+try store.storeEvents(calendar: cals[1].id!, [
+  res(cals[1], "standup", vevent("standup", "Standup", t(-2, 10, 30), t(-2, 10, 45), "RRULE:FREQ=DAILY;COUNT=10\r\n")),
+  res(cals[1], "review", vevent("review", "Design review", t(1, 14), t(1, 15, 30), "LOCATION:Room 4\r\n")),
+  res(cals[1], "oneone", vevent("oneone", "1:1 with Marta", t(1, 14, 30), t(1, 15))),
+])
+try store.storeEvents(calendar: cals[2].id!, [
+  res(cals[2], "dentist", vevent("dentist", "Dentist", t(0, 16), t(0, 16, 45))),
+])
+let invite = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:offsite@ek.example\r\nDTSTAMP:\(t(0, 9))\r\nSUMMARY:Q1 planning offsite\r\nDTSTART:\(t(1, 14))\r\nDTEND:\(t(1, 16))\r\nLOCATION:Studio 2\r\nORGANIZER;CN=Marta Ek:mailto:marta@ek.example\r\nATTENDEE;CN=Marta Ek;PARTSTAT=ACCEPTED:mailto:marta@ek.example\r\nATTENDEE;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:me@fastmail.com\r\nATTENDEE;CN=Jonas;PARTSTAT=NEEDS-ACTION:mailto:jonas@example.com\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+let inviteMail = "From: Marta Ek <marta@ek.example>\r\nTo: me@fastmail.com\r\nSubject: Invitation: Q1 planning offsite\r\nMessage-ID: <offsite-1@ek.example>\r\nDate: \(ago(600))\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nYou are invited to Q1 planning offsite.\r\n--b\r\nContent-Type: text/calendar; method=REQUEST; charset=utf-8\r\n\r\n\(invite)--b--\r\n"
+try store.insert(raw: Data(inviteMail.utf8), uid: 11, state: .init(seen: false, labels: [Label.inbox]), account: a.id!, mailbox: "INBOX")
+print("seeded calendars")

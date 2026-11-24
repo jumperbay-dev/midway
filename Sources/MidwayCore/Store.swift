@@ -328,6 +328,7 @@ public final class Store: Sendable {
             }
         }
         m.registerMigration("v7-ai") { db in try migrateAI(db) }
+        m.registerMigration("v8-calendars") { db in try migrateCalendars(db) }
         return m
     }
 

@@ -41,13 +41,26 @@ Done so far:
    the binary through your login shell (or a path you choose), checks the version and the sign-in, runs a test on a
    built-in sample, previews exactly what would be sent, and turns AI on per account. It is off for every account until
    you turn it on. In the reader, `a` (or Ask AI) pins a thread summary with "Asked of you" to-dos and, when a date is
-   settled, "Add to calendar" (an `.ics` for Calendar). Esc stops a run. In a reply, a one-line intent and Draft stream a
+   settled, "Add to calendar" (the event editor, filled in and marked, nothing saved until you save). Esc stops a run. In a reply, a one-line intent and Draft stream a
    suggestion; Polish, Shorter and Warmer rewrite it. Nothing reaches the body until Use draft (`⌘⇧↩`). The tag
    picker can suggest tags and a rule. Each run gets the prompt on stdin, an empty temporary folder and only `PATH`,
    `HOME`, `LANG` and `USER`, with tools, MCP servers, settings files and session saving off, and a 60 s timeout.
    Addresses and phone numbers are redacted by default. The run log keeps task, size, time and cost, never content.
 
    Not yet: Codex and a default engine per action, "Ask your mail", Claude in Focus and reply, AI in the Screener.
+8. **Calendars**: CalDAV for Fastmail (same app password; it needs calendar access) and Google (same sign-in; accounts
+   added before this version sign in again once for the calendar scope). Calendar mode is `⌘2`, Mail `⌘1`, or the
+   switch at the top of the sidebar. Day, week (48 pt an hour, overlapping events side by side, a now line), month and
+   a 60-day agenda; the sidebar has a mini month, Up next, calendars by account with a colour and an eye, and the sync
+   state. Quick add ("Lunch with Ada thu 12 /work") is parsed on the Mac, no AI; return saves, shift-return opens the
+   editor. The editor side panel saves with `⌘S`, or "Save and invite" with you as organiser so the server sends the
+   invitations. Edits PUT with `If-Match` and keep every line midway doesn't edit (descriptions, alarms); a 412 refetches
+   and says so. Repeating events keep their times. Calendars poll every 5 minutes, when midway comes to the front and
+   after an edit. Invitations in mail show a card with Accept, Maybe and Decline, the calendar to add to and clashes;
+   answers go through the server's copy when it has one, else the event is added and an iCalendar REPLY goes out by mail.
+
+   Not yet: sync-collection tokens, an offline queue for calendar edits (an edit fails while offline), BYMONTHDAY and
+   other rarer repeat rules, editing one occurrence of a series, free/busy lookup, tags on events, "Found in your mail".
 
 Builds with the Command Line Tools alone (no Xcode, no CI).
 
@@ -64,7 +77,8 @@ swift test -Xswiftc -plugin-path -Xswiftc /Library/Developer/CommandLineTools/us
 ```
 
 Gmail needs a Google Cloud OAuth client of type *Desktop app* (Gmail API enabled, consent screen with the
-`https://mail.google.com/` scope, your address as a test user). Put its ID and secret in a git-ignored file:
+`https://mail.google.com/` and `https://www.googleapis.com/auth/calendar` scopes, the CalDAV API enabled,
+your address as a test user). Put its ID and secret in a git-ignored file:
 
 ```sh
 cp config/Google.example.xcconfig config/Google.xcconfig   # then fill in both values
@@ -73,7 +87,7 @@ cp config/Google.example.xcconfig config/Google.xcconfig   # then fill in both v
 
 For `swift run`, set `MIDWAY_GOOGLE_CLIENT_ID` and `MIDWAY_GOOGLE_CLIENT_SECRET` instead.
 
-Dev store: `MIDWAY_HOME=/tmp/midway-dev swift run Seed /tmp/midway-dev` seeds sample mail; launch with the same `MIDWAY_HOME`.
+Dev store: `MIDWAY_HOME=/tmp/midway-dev swift run Seed /tmp/midway-dev` seeds sample mail, calendars and an invitation; launch with the same `MIDWAY_HOME`.
 
 ## Security
 

@@ -23,8 +23,8 @@ public struct GoogleClient: Sendable {
 public enum GoogleOAuth {
     static let authEndpoint = URL(string: "https://accounts.google.com/o/oauth2/v2/auth")!
     static let tokenEndpoint = URL(string: "https://oauth2.googleapis.com/token")!
-    // ponytail: mail only; the calendar scope joins with the Calendars milestone (one more consent screen then).
-    static let scopes = "https://mail.google.com/ openid email"
+    /// Mail and calendars. Accounts added before calendars sign in again once to grant the calendar scope.
+    static let scopes = "https://mail.google.com/ https://www.googleapis.com/auth/calendar openid email"
 
     public enum Failure: Error, Equatable, CustomStringConvertible {
         case invalidGrant

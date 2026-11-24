@@ -8,7 +8,8 @@ import os
 public enum Compose {
     public static func build(
         from: MIME.Address, to: [MIME.Address], cc: [MIME.Address], subject: String,
-        text: String, html: String, inReplyTo: String? = nil, references: String? = nil, date: Date = .now
+        text: String, html: String, inReplyTo: String? = nil, references: String? = nil, date: Date = .now,
+        calendar: (method: String, ics: String)? = nil
     ) -> (raw: Data, messageId: String) {
         let domain = from.address.split(separator: "@").last.map(String.init) ?? "midway.local"
         let messageId = "\(UUID().uuidString.lowercased())@\(domain)"
@@ -30,7 +31,9 @@ public enum Compose {
             "--\(boundary)\r\nContent-Type: \(type); charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n"
                 + Data(body.utf8).base64EncodedString(options: [.lineLength76Characters, .endLineWithCarriageReturn, .endLineWithLineFeed]) + "\r\n"
         }
-        let raw = h.joined(separator: "\r\n") + "\r\n\r\n" + part("text/plain", text) + part("text/html", html) + "--\(boundary)--\r\n"
+        // An invitation reply rides along as a third alternative (iMIP, RFC 6047).
+        let ics = calendar.map { part("text/calendar; method=\($0.method)", $0.ics) } ?? ""
+        let raw = h.joined(separator: "\r\n") + "\r\n\r\n" + part("text/plain", text) + part("text/html", html) + ics + "--\(boundary)--\r\n"
         return (Data(raw.utf8), messageId)
     }
 

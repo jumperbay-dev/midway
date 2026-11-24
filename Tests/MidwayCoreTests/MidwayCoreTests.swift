@@ -57,11 +57,10 @@ PHA+U2l0eiAxNEE8L3A+
     let blobs = try FileManager.default.subpathsOfDirectory(atPath: dir.appending(path: "messages").path).filter { $0.hasSuffix(".eml") }
     #expect(blobs.count == 1)
 
-    let m = try store.db.read { try Message.fetchOne($0, key: 1)! }
-    try store.markSeen(m.id!)
+    try store.apply(.seen, true, to: 1)
     try store.update([1: .init(seen: false, labels: [Label.inbox]), 2: .init(seen: true, labels: [Label.inbox])], account: id, mailbox: "INBOX")  // server still says unread
     #expect(try store.db.read { try Message.fetchOne($0, key: 1)!.seen })
-    #expect(try store.dirtySeen(account: id, mailbox: "INBOX") == [1])
+    #expect(try store.pendingOps(account: id, mailbox: "INBOX").map(\.uid) == [1])
 
     // UIDVALIDITY reset drops the mailbox's rows.
     #expect(try store.prepareMailbox(account: id, name: "INBOX", uidValidity: 7) == [1, 2])

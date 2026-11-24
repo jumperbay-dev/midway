@@ -7,6 +7,13 @@ Done so far:
    INBOX sync (newest 200) with IDLE, sidebar + list + sandboxed HTML reader.
 2. **Gmail**: Google sign-in in the browser (OAuth with PKCE, loopback redirect), IMAP `XOAUTH2`,
    All Mail sync with `X-GM-MSGID`/`X-GM-THRID`/`X-GM-LABELS`, labels as sidebar folders, one unified Inbox.
+3. **Daily driver**: offline queue (archive `e`, delete `#`, star `s`, read/unread `u`, undo `⌘Z`), deletions found by UID check,
+   compose window (`c`, reply `r`) with rich text, address autocomplete, local drafts, outbox with 10-second undo send over SMTP
+   (implicit TLS, `AUTH PLAIN` or `XOAUTH2`) and retries, FTS5 search (`/`) with server fallback on return, and an address book
+   built from received and sent mail.
+
+   Not yet: Drafts saved to the server's Drafts folder, Fastmail Archive/Trash views (only INBOX syncs there),
+   backfill beyond the newest 200, lists/quotes/images in the composer.
 
 Builds with the Command Line Tools alone (no Xcode, no CI).
 
@@ -37,6 +44,8 @@ Dev store: `MIDWAY_HOME=/tmp/midway-dev swift run Seed /tmp/midway-dev` seeds sa
 ## Security
 
 - **Network**: IMAP over TLS only (`swift-nio-imap` → NIOSSL, full certificate and hostname verification).
+- **Sending**: SMTP over TLS on 465 through Network.framework (system trust, hostname checked). Outgoing HTML is generated
+  from bold, italic and http(s)/mailto links only.
 - **Secrets**: app password or Google refresh token in the Keychain (`AfterFirstUnlockThisDeviceOnly`, not synced), never in SQLite. Google access tokens live in memory only.
 - **Mail HTML** renders in `WKWebView`, which runs in Apple's sandboxed `WebContent` process, with Lockdown Mode on
   for that view, inline JavaScript allowed for now (no network, windows or navigation), a `default-src 'none'` CSP, a content rule list blocking all http(s)/ws/ftp loads,

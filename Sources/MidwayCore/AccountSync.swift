@@ -53,6 +53,8 @@ public actor AccountSync {
     struct LoginFailed: Error {}
     struct TokenRejected: Error {}
     struct NoAllMail: Error {}
+    /// Special-use folders by attribute (\All, \Archive, \Trash), found once per session.
+    var roles: [String: String] = [:]
 
     static func configuration(_ account: Account) -> IMAPConnection.Configuration {
         IMAPConnection.Configuration(hostname: account.imapHost, port: UInt16(account.imapPort), useTLS: true, logging: .noLogging)
@@ -69,7 +71,8 @@ public actor AccountSync {
                 }
                 throw LoginFailed()
             }
-            let mailbox = isGmail ? try await allMail(conn) : "INBOX"
+            roles = try await Self.specialUse(conn)
+            guard let mailbox = isGmail ? roles["\\All"] : "INBOX" else { throw NoAllMail() }
             while !Task.isCancelled {
                 try await syncOnce(conn, mailbox: mailbox)
                 onState(.synced(.now))
@@ -106,17 +109,17 @@ public actor AccountSync {
         "user=\(user)\u{01}auth=Bearer \(token)\u{01}\u{01}"
     }
 
-    /// All Mail's name is localised ("[Gmail]/Alle Nachrichten"), so it is found by its \All attribute.
-    func allMail(_ conn: IMAPConnection) async throws -> String {
-        var found: String?
+    /// Folder names are localised ("[Gmail]/Alle Nachrichten"), so they are found by SPECIAL-USE attribute.
+    static func specialUse(_ conn: IMAPConnection) async throws -> [String: String] {
+        var found: [String: String] = [:]
         _ = try await conn.send(.list(nil, reference: MailboxName(ByteBuffer()), .mailbox(ByteBuffer(string: "*")))) { _, responses in
             try await responses.forEach { r in
-                if case .untagged(.mailboxData(.list(let info))) = r, info.attributes.contains("\\All") {
-                    found = String(decoding: info.path.name.bytes, as: UTF8.self)
+                guard case .untagged(.mailboxData(.list(let info))) = r else { return }
+                for role in ["\\All", "\\Archive", "\\Trash"] where info.attributes.contains(where: { $0 == MailboxInfo.Attribute(role) }) {
+                    found[role] = String(decoding: info.path.name.bytes, as: UTF8.self)
                 }
             }
         }
-        guard let found else { throw NoAllMail() }
         return found
     }
 
@@ -139,13 +142,9 @@ public actor AccountSync {
 
         let known = try store.prepareMailbox(account: accountId, name: mailbox, uidValidity: validity)
 
-        // Push local seen changes first.
-        let dirty = try store.dirtySeen(account: accountId, mailbox: mailbox)
-        if let set = uidSet(dirty) {
-            _ = try await conn.send(.uidStore(.set(set), [], .flags(.add(silent: true, list: [.seen])))) { _, r in
-                try await r.waitForCompletion().checkOK()
-            }
-            try store.clearDirty(dirty, account: accountId, mailbox: mailbox)
+        // The offline queue goes first.
+        for op in try store.pendingOps(account: accountId, mailbox: mailbox) {
+            try await replay(op, conn)
         }
         guard exists > 0 else { return }
 
@@ -164,8 +163,21 @@ public actor AccountSync {
         }
         try store.update(states, account: accountId, mailbox: mailbox)
 
-        // Bodies for new UIDs, newest first, 25 per round trip.
-        let missing = states.keys.filter { !known.contains($0) }.sorted(by: >)
+        // Deletions elsewhere: compare the UIDs we hold with the server's.
+        // ponytail: one UID SEARCH from our oldest UID up; chunk it when mailboxes reach 100k+ messages
+        if let oldest = known.min() {
+            let present = try await Self.searchUIDs(conn, .uid(.set(MessageIdentifierSetNonEmpty(range: MessageIdentifierRange(UID(rawValue: UInt32(oldest))...)))))
+            try store.removeMissing(account: accountId, mailbox: mailbox, present: Set(present), from: oldest)
+        }
+
+        // Bodies for new UIDs, newest first.
+        try await fetchBodies(conn, states.keys.filter { !known.contains($0) }, mailbox: mailbox)
+    }
+
+    /// Downloads and stores whole messages, 25 per round trip.
+    func fetchBodies(_ conn: IMAPConnection, _ uids: [Int64], mailbox: String) async throws {
+        let accountId = account.id!
+        let missing = uids.sorted(by: >)
         for chunk in stride(from: 0, to: missing.count, by: 25).map({ Array(missing[$0..<min($0 + 25, missing.count)]) }) {
             guard let set = uidSet(chunk) else { continue }
             _ = try await conn.send(.uidFetch(.set(set), attributes + [.bodySection(peek: true, .complete, nil)], [])) { _, responses in
@@ -182,6 +194,40 @@ public actor AccountSync {
         }
     }
 
+    static func searchUIDs(_ conn: IMAPConnection, _ key: SearchKey) async throws -> [Int64] {
+        var uids: [Int64] = []
+        _ = try await conn.send(.uidSearch(key: key)) { _, responses in
+            try await responses.forEach { r in
+                if case .untagged(.mailboxData(.search(let ids, _))) = r { uids += ids.map { Int64($0.rawValue) } }
+            }
+        }
+        return uids
+    }
+
+    /// Sends one queued action. A NO from the server (message gone, folder missing) drops the op;
+    /// a network error leaves it queued for the next session.
+    // ponytail: one command per op; batch by kind if queues get long
+    func replay(_ op: PendingOp, _ conn: IMAPConnection) async throws {
+        guard let set = uidSet([op.uid]) else { return }
+        let gmail = { (names: [String]) in names.map { GmailLabel(ByteBuffer(string: $0)) } }
+        var leaves = false
+        let command: Command? = switch (op.kind, op.value, isGmail) {
+        case (.seen, let on, _): .uidStore(.set(set), [], .flags(on ? .add(silent: true, list: [.seen]) : .remove(silent: true, list: [.seen])))
+        case (.flagged, let on, _): .uidStore(.set(set), [], .flags(on ? .add(silent: true, list: [.flagged]) : .remove(silent: true, list: [.flagged])))
+        case (.archive, true, true): .uidStore(.set(set), [], .gmailLabels(.remove(silent: true, gmailLabels: gmail([Label.inbox]))))
+        case (.archive, false, true), (.trash, false, true): .uidStore(.set(set), [], .gmailLabels(.add(silent: true, gmailLabels: gmail([Label.inbox]))))
+        case (.archive, true, false): roles["\\Archive"].map { leaves = true; return .uidMove(.set(set), MailboxName(ByteBuffer(string: $0))) }
+        case (.trash, true, _): roles["\\Trash"].map { leaves = true; return .uidMove(.set(set), MailboxName(ByteBuffer(string: $0))) }
+        // Fastmail syncs INBOX only, so an archived or trashed message is no longer here to bring back.
+        case (.archive, false, false), (.trash, false, false): nil
+        }
+        guard let command else { return try store.finish(op, removeMessage: false) }
+        let tagged = try await conn.send(command) { _, r in try await r.waitForCompletion() }
+        let ok = (try? tagged.checkOK()) != nil
+        // ponytail: a refused op is dropped without rolling back the local change; add the quiet notice with the Offline screen
+        try store.finish(op, removeMessage: ok && leaves)
+    }
+
     var attributes: [FetchAttribute] {
         isGmail ? [.uid, .flags, .gmailMessageID, .gmailThreadID, .gmailLabels] : [.uid, .flags]
     }
@@ -190,6 +236,7 @@ public actor AccountSync {
     struct Fetched {
         var uid: Int64?
         var seen = false
+        var flagged = false
         var labels: [String] = []
         var gmMsgId: Int64?
         var gmThrId: Int64?
@@ -198,7 +245,7 @@ public actor AccountSync {
         mutating func apply(_ f: FetchResponse) {
             switch f {
             case .simpleAttribute(.uid(let u)): uid = Int64(u.rawValue)
-            case .simpleAttribute(.flags(let fl)): seen = fl.contains(.seen)
+            case .simpleAttribute(.flags(let fl)): seen = fl.contains(.seen); flagged = fl.contains(.flagged)
             case .simpleAttribute(.gmailLabels(let l)): labels = l.map { $0.makeDisplayString() }
             case .simpleAttribute(.gmailMessageID(let id)): gmMsgId = Int64(bitPattern: id)
             case .simpleAttribute(.gmailThreadID(let id)): gmThrId = Int64(bitPattern: id)
@@ -209,7 +256,7 @@ public actor AccountSync {
 
         /// IMAP folders have no labels, so INBOX is labelled \Inbox to match Gmail.
         func state(isGmail: Bool) -> Store.ServerState {
-            Store.ServerState(seen: seen, labels: isGmail ? labels : [Label.inbox], gmMsgId: gmMsgId, gmThrId: gmThrId)
+            Store.ServerState(seen: seen, flagged: flagged, labels: isGmail ? labels : [Label.inbox], gmMsgId: gmMsgId, gmThrId: gmThrId)
         }
     }
 
@@ -236,6 +283,30 @@ public actor AccountSync {
 
     func uidSet(_ uids: [Int64]) -> MessageIdentifierSetNonEmpty<UID>? {
         MessageIdentifierSetNonEmpty(set: MessageIdentifierSet(uids.map { MessageIdentifierRange(UID(rawValue: UInt32($0))) }))
+    }
+
+    /// Older mail: asks the server (X-GM-RAW on Gmail, TEXT elsewhere) on its own connection, stores the
+    /// newest `limit` hits it did not have, and returns the store ids of all of them.
+    public func searchServer(_ text: String, limit: Int = 20) async throws -> [Int64] {
+        let login = try await credentials.login()
+        return try await IMAPConnection.withConnection(configuration: Self.configuration(account)) { _, conn in
+            guard try await Self.authenticate(conn, login) else { return [] }
+            let roles = try await Self.specialUse(conn)
+            guard let mailbox = isGmail ? roles["\\All"] : "INBOX" else { return [] }
+            var validity: Int64?
+            _ = try await conn.send(.examine(MailboxName(ByteBuffer(string: mailbox)))) { _, responses in
+                try await responses.forEach { r in
+                    if case .untagged(.conditionalState(.ok(let t))) = r, case .uidValidity(let v) = t.code { validity = Int64(UInt32(v)) }
+                }
+            }
+            // Without UIDVALIDITY the stored UIDs cannot be trusted against these hits.
+            guard let validity else { return [] }
+            let key: SearchKey = isGmail ? .gmailRaw(ByteBuffer(string: text)) : .text(ByteBuffer(string: text))
+            let hits = Array(try await Self.searchUIDs(conn, key).sorted(by: >).prefix(limit))
+            let have = try store.prepareMailbox(account: account.id!, name: mailbox, uidValidity: validity)
+            try await fetchBodies(conn, hits.filter { !have.contains($0) }, mailbox: mailbox)
+            return try store.messageIds(account: account.id!, mailbox: mailbox, uids: hits)
+        }
     }
 
     /// Checks a login before an account is saved.

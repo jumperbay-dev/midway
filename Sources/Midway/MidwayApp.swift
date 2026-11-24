@@ -30,6 +30,14 @@ struct MidwayApp: App {
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1280, height: 800)
+        .commands { TextFormattingCommands() }
+
+        // Compose opens as its own window, one per draft.
+        WindowGroup("New message", id: "compose", for: Int64.self) { $draft in
+            if let draft = draft { ComposeView(model: model, draftId: draft) }
+        }
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 720, height: 600)
     }
 }
 
@@ -41,6 +49,10 @@ final class AppModel {
     var fatal: String?
     let store: Store?
     private var syncers: [Int64: AccountSync] = [:]
+    private var credentials: [Int64: Credentials] = [:]
+    private var outbox: Outbox?
+    /// The last archive, delete, star or read change, for ⌘Z.
+    var last: (kind: OpKind, value: Bool, message: Int64, accountId: Int64)?
     private var tasks: [Task<Void, Never>] = []
 
     init() {
@@ -51,6 +63,16 @@ final class AppModel {
             fatal = "Could not open the mail store: \(error)"
         }
         for a in (try? store?.accounts()) ?? [] { start(a) }
+        if let store {
+            let o = Outbox(store: store) { [weak self] id in
+                try await MainActor.run {
+                    guard let self, let a = self.accounts.first(where: { $0.id == id }), let c = self.credentials[id] else { throw AddError("Sign in to this account again.") }
+                    return (a, c)
+                }
+            }
+            outbox = o
+            tasks.append(Task { await o.run() })
+        }
     }
 
     /// Fastmail by default; anything else gets imap.<domain>, editable on the Add account screen.
@@ -105,8 +127,13 @@ final class AppModel {
             sync[id] = .signInFailed
             return
         }
+        self.credentials[id] = credentials
         let s = AccountSync(account: account, credentials: credentials, store: store) { [weak self] state in
-            Task { @MainActor in self?.sync[id] = state }
+            Task { @MainActor in
+                self?.sync[id] = state
+                // Back online: failed sends get another go now, not at their backoff time.
+                if case .synced = state { self?.outbox?.wake() }
+            }
         }
         syncers[id] = s
         tasks.append(Task { await s.run() })
@@ -114,8 +141,75 @@ final class AppModel {
 
     func open(_ message: Message) {
         guard let id = message.id, !message.seen else { return }
-        try? store?.markSeen(id)
+        try? store?.apply(.seen, true, to: id)
         syncers[message.accountId]?.wake()
+    }
+
+    /// Archive and delete wait 5 seconds before reaching the server, so ⌘Z can still take them back.
+    func act(_ kind: OpKind, _ value: Bool, _ message: Message) {
+        guard let id = message.id else { return }
+        let delay: TimeInterval = kind == .archive || kind == .trash ? 5 : 0
+        try? store?.apply(kind, value, to: id, delay: delay)
+        last = (kind, value, id, message.accountId)
+        wake(message.accountId, after: delay)
+    }
+
+    func undo() {
+        guard let l = last else { return }
+        try? store?.apply(l.kind, !l.value, to: l.message)
+        last = nil
+        wake(l.accountId, after: 0)
+    }
+
+    func wake(_ account: Int64, after delay: TimeInterval) {
+        let s = syncers[account]
+        Task {
+            if delay > 0 { try? await Task.sleep(for: .seconds(delay + 0.5)) }
+            s?.wake()
+        }
+    }
+
+    /// Asks every account's server; returns the store ids of its hits, which are now stored locally too.
+    func searchServer(_ text: String) async -> [Int64] {
+        var ids: [Int64] = []
+        for s in syncers.values { ids += (try? await s.searchServer(text)) ?? [] }
+        return ids
+    }
+
+    // MARK: compose
+
+    func newDraft(replyingTo m: Message? = nil) -> Int64? {
+        guard let store, let account = m?.accountId ?? accounts.first?.id else { return nil }
+        var d = Draft(accountId: account)
+        if let m, let raw = try? store.raw(m) {
+            let p = MIME.parse(raw)
+            let to = p.replyTo ?? p.from
+            d.toList = to.name.isEmpty ? to.address : "\(to.name) <\(to.address)>"
+            d.subject = m.subject.lowercased().hasPrefix("re:") ? m.subject : "Re: \(m.subject)"
+            d.inReplyTo = m.messageId
+            d.refs = ([p.references].compactMap { $0 } + (m.messageId.map { ["<\($0)>"] } ?? [])).joined(separator: " ")
+            let quoted = (p.text ?? p.html.map(MIME.stripTags) ?? "").split(separator: "\n", omittingEmptySubsequences: false).map { "> \($0)" }.joined(separator: "\n")
+            let who = m.fromName.isEmpty ? m.fromAddr : m.fromName
+            d.rtf = RichText.rtf("\n\nOn \(m.date.formatted(date: .abbreviated, time: .shortened)), \(who) wrote:\n\(quoted)")
+        }
+        return (try? store.save(d))?.id
+    }
+
+    /// Builds the message and leaves it in the outbox for the 10-second undo window.
+    func send(_ draft: Draft, body: NSAttributedString) throws {
+        guard let store, let account = accounts.first(where: { $0.id == draft.accountId }), let id = draft.id else { return }
+        let to = MIME.addresses(draft.toList), cc = MIME.addresses(draft.ccList), bcc = MIME.addresses(draft.bccList)
+        guard !(to + cc + bcc).isEmpty else { throw AddError("Add at least one recipient.") }
+        let built = Compose.build(
+            from: MIME.Address(name: "", address: account.email), to: to, cc: cc, subject: draft.subject,
+            text: body.string, html: RichText.html(body), inReplyTo: draft.inReplyTo, references: draft.refs)
+        try store.enqueue(draft: id, account: account.id!, raw: built.raw, recipients: (to + cc + bcc).map(\.address), sendAt: .now.addingTimeInterval(10))
+        outbox?.wake()
+    }
+
+    func unsend(_ draft: Int64) {
+        try? store?.unqueue(draft: draft)
+        outbox?.wake()
     }
 }
 

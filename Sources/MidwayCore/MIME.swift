@@ -6,12 +6,22 @@ public enum MIME {
     public struct Address: Equatable, Sendable {
         public var name: String
         public var address: String
+
+        public init(name: String, address: String) {
+            self.name = name
+            self.address = address
+        }
     }
 
     public struct Parsed: Sendable {
         public var subject = ""
         public var from = Address(name: "", address: "")
         public var to = Address(name: "", address: "")
+        /// Every To and Cc address.
+        public var recipients: [Address] = []
+        public var replyTo: Address?
+        public var references: String?
+        public var listId: String?
         public var date: Date?
         public var messageId: String?
         public var html: String?
@@ -29,6 +39,10 @@ public enum MIME {
         p.subject = decodeWords(headers["subject"] ?? "")
         p.from = address(decodeWords(headers["from"] ?? ""))
         p.to = address(decodeWords(headers["to"] ?? ""))
+        p.recipients = addresses(decodeWords(headers["to"] ?? "")) + addresses(decodeWords(headers["cc"] ?? ""))
+        p.replyTo = headers["reply-to"].map { address(decodeWords($0)) }
+        p.references = headers["references"]
+        p.listId = headers["list-id"]
         p.date = headers["date"].flatMap(date)
         p.messageId = headers["message-id"]?.trimmingCharacters(in: CharacterSet(charactersIn: "<> "))
         walk(headers: headers, body: body, into: &p)
@@ -195,6 +209,23 @@ public enum MIME {
         return Address(name: "", address: a)
     }
 
+    /// `"Lind, Ada" <ada@x>, bob@y` → both, splitting only on commas outside quotes and angle brackets.
+    public static func addresses(_ s: String) -> [Address] {
+        var out: [String] = [], cur = "", quoted = false, angled = false
+        for c in s {
+            switch c {
+            case "\"": quoted.toggle()
+            case "<" where !quoted: angled = true
+            case ">" where !quoted: angled = false
+            case "," where !quoted && !angled: out.append(cur); cur = ""; continue
+            default: break
+            }
+            cur.append(c)
+        }
+        out.append(cur)
+        return out.map(address).filter { $0.address.contains("@") }
+    }
+
     static func date(_ s: String) -> Date? {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
@@ -207,7 +238,7 @@ public enum MIME {
         return nil
     }
 
-    static func stripTags(_ html: String) -> String {
+    public static func stripTags(_ html: String) -> String {
         html.replacing(/(?is)<(style|script|head)[^>]*>.*?<\/\1>/, with: " ")
             .replacing(/<[^>]+>/, with: " ")
             .replacing("&nbsp;", with: " ").replacing("&amp;", with: "&")

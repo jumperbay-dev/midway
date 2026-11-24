@@ -27,6 +27,11 @@ public struct Account: Codable, Hashable, Sendable, FetchableRecord, MutablePers
         Account(email: email, imapHost: "imap.gmail.com", kind: .google)
     }
 
+    /// imap.fastmail.com → smtp.fastmail.com, imap.gmail.com → smtp.gmail.com.
+    public var smtpHost: String {
+        imapHost.hasPrefix("imap.") ? "smtp." + imapHost.dropFirst(5) : imapHost
+    }
+
     public mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
 }
 
@@ -43,8 +48,7 @@ public struct Message: Codable, Hashable, Sendable, Identifiable, FetchableRecor
     public var date: Date
     public var preview: String
     public var seen: Bool
-    /// Seen changed locally and not yet stored on the server.
-    public var seenDirty: Bool
+    public var flagged: Bool
     public var blob: String
     public var gmMsgId: Int64?
     public var gmThrId: Int64?
@@ -55,6 +59,57 @@ public struct Message: Codable, Hashable, Sendable, Identifiable, FetchableRecor
 public enum Label {
     /// The label every view of "Inbox" is built on, for IMAP folders and Gmail alike.
     public static let inbox = "\\Inbox"
+    public static let trash = "\\Trash"
+}
+
+/// A message action. Applied to the store at once, sent to the server by the account's sync.
+/// Each one states an end state ("seen = true"), so replaying it is harmless.
+public enum OpKind: String, Codable, Sendable {
+    case seen, flagged, archive, trash
+}
+
+public struct PendingOp: Sendable, Equatable {
+    public var id: Int64
+    public var uid: Int64
+    public var kind: OpKind
+    public var value: Bool
+}
+
+public struct Contact: Codable, Hashable, Sendable, FetchableRecord {
+    public var address: String
+    public var name: String
+    public var lastSeen: Date
+    public var sent: Int
+    public var received: Int
+}
+
+public struct Draft: Codable, Hashable, Sendable, Identifiable, FetchableRecord, MutablePersistableRecord {
+    public var id: Int64?
+    public var accountId: Int64
+    public var toList = ""
+    public var ccList = ""
+    public var bccList = ""
+    public var subject = ""
+    /// The composer's rich text as RTF; HTML and plain text are generated at send.
+    public var rtf = Data()
+    public var inReplyTo: String?
+    public var refs: String?
+    public var updatedAt = Date.now
+
+    public init(accountId: Int64) { self.accountId = accountId }
+    public mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
+}
+
+public struct OutboxItem: Codable, Hashable, Sendable, Identifiable, FetchableRecord {
+    public var id: Int64
+    public var draftId: Int64
+    public var accountId: Int64
+    public var raw: Data
+    /// Envelope recipients, one per line (To, Cc and Bcc).
+    public var recipients: String
+    public var sendAt: Date
+    public var attempts: Int
+    public var error: String?
 }
 
 /// One SQLite database (GRDB, WAL) plus content-addressed raw messages, as in the design doc's Storage section.
@@ -65,8 +120,9 @@ public final class Store: Sendable {
     public static func open(at dir: URL) throws -> Store {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let db = try DatabasePool(path: dir.appending(path: "midway.sqlite").path)
-        try migrator.migrate(db)
-        return Store(db: db, blobs: dir.appending(path: "messages"))
+        let blobs = dir.appending(path: "messages")
+        try migrator(blobs: blobs).migrate(db)
+        return Store(db: db, blobs: blobs)
     }
 
     /// `MIDWAY_HOME` points a dev run at a throwaway store.
@@ -80,7 +136,7 @@ public final class Store: Sendable {
         self.blobs = blobs
     }
 
-    static var migrator: DatabaseMigrator {
+    static func migrator(blobs: URL) -> DatabaseMigrator {
         var m = DatabaseMigrator()
         m.registerMigration("v1") { db in
             try db.create(table: "account") { t in
@@ -127,6 +183,61 @@ public final class Store: Sendable {
             }
             try db.execute(sql: "INSERT INTO label (messageId, name) SELECT id, ? FROM message WHERE mailbox = 'INBOX'", arguments: [Label.inbox])
         }
+        m.registerMigration("v3-daily") { db in
+            try db.alter(table: "message") { t in t.add(column: "flagged", .boolean).notNull().defaults(to: false) }
+            // The offline queue. One row per message and kind: a newer opposite action cancels it.
+            try db.create(table: "op") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("messageId", .integer).notNull().references("message", onDelete: .cascade)
+                t.column("kind", .text).notNull()
+                t.column("value", .boolean).notNull()
+                t.column("prior", .text)  // labels before archive or trash, restored on undo
+                t.column("notBefore", .datetime).notNull()
+                t.column("attempts", .integer).notNull().defaults(to: 0)
+                t.uniqueKey(["messageId", "kind"])
+            }
+            try db.execute(sql: "INSERT INTO op (messageId, kind, value, notBefore) SELECT id, 'seen', 1, ? FROM message WHERE seenDirty = 1", arguments: [Date.now])
+            try db.alter(table: "message") { t in t.drop(column: "seenDirty") }
+
+            try db.execute(sql: "CREATE VIRTUAL TABLE message_fts USING fts5(subject, people, body, tokenize = 'unicode61 remove_diacritics 2', prefix = '2 3')")
+            try db.execute(sql: "CREATE TRIGGER message_fts_delete AFTER DELETE ON message BEGIN DELETE FROM message_fts WHERE rowid = old.id; END")
+            try db.create(table: "contact") { t in
+                t.column("address", .text).primaryKey().collate(.nocase)
+                t.column("name", .text).notNull()
+                t.column("lastSeen", .datetime).notNull()
+                t.column("sent", .integer).notNull()
+                t.column("received", .integer).notNull()
+            }
+            try db.create(table: "draft") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("accountId", .integer).notNull().references("account", onDelete: .cascade)
+                t.column("toList", .text).notNull()
+                t.column("ccList", .text).notNull()
+                t.column("bccList", .text).notNull()
+                t.column("subject", .text).notNull()
+                t.column("rtf", .blob).notNull()
+                t.column("inReplyTo", .text)
+                t.column("refs", .text)
+                t.column("updatedAt", .datetime).notNull()
+            }
+            try db.create(table: "outbox") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("draftId", .integer).notNull().unique().references("draft", onDelete: .cascade)
+                t.column("accountId", .integer).notNull().references("account", onDelete: .cascade)
+                t.column("raw", .blob).notNull()
+                t.column("recipients", .text).notNull()
+                t.column("sendAt", .datetime).notNull()
+                t.column("attempts", .integer).notNull().defaults(to: 0)
+                t.column("error", .text)
+            }
+            // Index what is already stored.
+            let rows = try Row.fetchAll(db, sql: "SELECT message.id, message.blob, message.date, account.email FROM message JOIN account ON account.id = message.accountId")
+            for r in rows {
+                let hash: String = r["blob"]
+                guard let raw = try? Data(contentsOf: blobURL(blobs, hash)) else { continue }
+                try index(r["id"], MIME.parse(raw), account: r["email"], date: r["date"], db)
+            }
+        }
         return m
     }
 
@@ -163,12 +274,14 @@ public final class Store: Sendable {
     /// What the server says about one message, from a FETCH.
     public struct ServerState: Sendable {
         public var seen: Bool
+        public var flagged: Bool
         public var labels: [String]
         public var gmMsgId: Int64?
         public var gmThrId: Int64?
 
-        public init(seen: Bool, labels: [String], gmMsgId: Int64? = nil, gmThrId: Int64? = nil) {
+        public init(seen: Bool, flagged: Bool = false, labels: [String], gmMsgId: Int64? = nil, gmThrId: Int64? = nil) {
             self.seen = seen
+            self.flagged = flagged
             self.labels = labels
             self.gmMsgId = gmMsgId
             self.gmThrId = gmThrId
@@ -183,20 +296,41 @@ public final class Store: Sendable {
                 accountId: account, mailbox: mailbox, uid: uid, messageId: p.messageId,
                 fromName: p.from.name, fromAddr: p.from.address, toAddr: p.to.address,
                 subject: p.subject, date: p.date ?? .now, preview: p.preview,
-                seen: state.seen, seenDirty: false, blob: hash, gmMsgId: state.gmMsgId, gmThrId: state.gmThrId)
+                seen: state.seen, flagged: state.flagged, blob: hash, gmMsgId: state.gmMsgId, gmThrId: state.gmThrId)
             try m.insert(db, onConflict: .ignore)
-            if let id = m.id { try setLabels(state.labels, message: id, db) }
+            guard let id = m.id, db.changesCount > 0 else { return }
+            try setLabels(state.labels, message: id, db)
+            let email = try String.fetchOne(db, sql: "SELECT email FROM account WHERE id = ?", arguments: [account]) ?? ""
+            try Self.index(id, p, account: email, date: m.date, db)
         }
     }
 
-    /// Server flags and labels win, except seen on rows with a local change still waiting to be stored.
+    /// Server flags and labels win, except where a local action is still queued for that message.
     public func update(_ states: [Int64: ServerState], account: Int64, mailbox: String) throws {
         try db.write { db in
             for (uid, s) in states {
                 guard let id = try Int64.fetchOne(db, sql: "SELECT id FROM message WHERE accountId = ? AND mailbox = ? AND uid = ?", arguments: [account, mailbox, uid]) else { continue }
-                try db.execute(sql: "UPDATE message SET seen = ? WHERE id = ? AND seenDirty = 0", arguments: [s.seen, id])
-                try setLabels(s.labels, message: id, db)
+                let queued = Set(try String.fetchAll(db, sql: "SELECT kind FROM op WHERE messageId = ?", arguments: [id]))
+                if !queued.contains("seen") { try db.execute(sql: "UPDATE message SET seen = ? WHERE id = ?", arguments: [s.seen, id]) }
+                if !queued.contains("flagged") { try db.execute(sql: "UPDATE message SET flagged = ? WHERE id = ?", arguments: [s.flagged, id]) }
+                if !queued.contains("archive") && !queued.contains("trash") { try setLabels(s.labels, message: id, db) }
             }
+        }
+    }
+
+    /// Drops rows whose UID the server no longer has, among UIDs >= `from`.
+    public func removeMissing(account: Int64, mailbox: String, present: Set<Int64>, from: Int64) throws {
+        try db.write { db in
+            let local = try Int64.fetchAll(db, sql: "SELECT uid FROM message WHERE accountId = ? AND mailbox = ? AND uid >= ?", arguments: [account, mailbox, from])
+            for uid in local where !present.contains(uid) {
+                try db.execute(sql: "DELETE FROM message WHERE accountId = ? AND mailbox = ? AND uid = ?", arguments: [account, mailbox, uid])
+            }
+        }
+    }
+
+    public func messageIds(account: Int64, mailbox: String, uids: [Int64]) throws -> [Int64] {
+        try db.read { db in
+            try uids.compactMap { try Int64.fetchOne(db, sql: "SELECT id FROM message WHERE accountId = ? AND mailbox = ? AND uid = ?", arguments: [account, mailbox, $0]) }
         }
     }
 
@@ -207,33 +341,187 @@ public final class Store: Sendable {
         }
     }
 
-    public func markSeen(_ id: Int64) throws {
-        try db.write { try $0.execute(sql: "UPDATE message SET seen = 1, seenDirty = 1 WHERE id = ? AND seen = 0", arguments: [id]) }
-    }
+    // MARK: offline queue
 
-    public func dirtySeen(account: Int64, mailbox: String) throws -> [Int64] {
-        try db.read { try Int64.fetchAll($0, sql: "SELECT uid FROM message WHERE accountId = ? AND mailbox = ? AND seenDirty = 1", arguments: [account, mailbox]) }
-    }
-
-    public func clearDirty(_ uids: [Int64], account: Int64, mailbox: String) throws {
+    /// Applies an action locally and queues it for the server. An opposite action still in the queue
+    /// cancels it instead (archive, then undo), restoring the labels it changed.
+    /// `delay` holds archive and trash back so undo can catch them before the server does.
+    public func apply(_ kind: OpKind, _ value: Bool, to id: Int64, delay: TimeInterval = 0) throws {
         try db.write { db in
-            for uid in uids {
-                try db.execute(sql: "UPDATE message SET seenDirty = 0 WHERE accountId = ? AND mailbox = ? AND uid = ?", arguments: [account, mailbox, uid])
+            if let row = try Row.fetchOne(db, sql: "SELECT id, value, prior FROM op WHERE messageId = ? AND kind = ?", arguments: [id, kind.rawValue]) {
+                guard row["value"] as Bool != value else { return }
+                try db.execute(sql: "DELETE FROM op WHERE id = ?", arguments: [row["id"] as Int64])
+                switch kind {
+                case .seen, .flagged: try db.execute(sql: "UPDATE message SET \(kind.rawValue) = ? WHERE id = ?", arguments: [value, id])
+                case .archive, .trash:
+                    let prior: String? = row["prior"]
+                    try setLabels(prior.flatMap { try? JSONDecoder().decode([String].self, from: Data($0.utf8)) } ?? [], message: id, db)
+                }
+                return
             }
+            let labels = try String.fetchAll(db, sql: "SELECT name FROM label WHERE messageId = ?", arguments: [id])
+            var prior: String?
+            switch kind {
+            case .seen, .flagged:
+                guard try Bool.fetchOne(db, sql: "SELECT \(kind.rawValue) FROM message WHERE id = ?", arguments: [id]) != value else { return }
+                try db.execute(sql: "UPDATE message SET \(kind.rawValue) = ? WHERE id = ?", arguments: [value, id])
+            case .archive:
+                prior = String(decoding: try JSONEncoder().encode(labels), as: UTF8.self)
+                try setLabels(value ? labels.filter { $0 != Label.inbox } : labels + [Label.inbox], message: id, db)
+            case .trash:
+                prior = String(decoding: try JSONEncoder().encode(labels), as: UTF8.self)
+                try setLabels(value ? [Label.trash] : labels.filter { $0 != Label.trash } + [Label.inbox], message: id, db)
+            }
+            try db.execute(
+                sql: "INSERT INTO op (messageId, kind, value, prior, notBefore) VALUES (?, ?, ?, ?, ?)",
+                arguments: [id, kind.rawValue, value, prior, Date.now.addingTimeInterval(delay)])
+        }
+    }
+
+    /// Due ops for one mailbox, oldest first.
+    public func pendingOps(account: Int64, mailbox: String) throws -> [PendingOp] {
+        try db.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT op.id, message.uid, op.kind, op.value FROM op JOIN message ON message.id = op.messageId
+                WHERE message.accountId = ? AND message.mailbox = ? AND op.notBefore <= ? ORDER BY op.id
+                """, arguments: [account, mailbox, Date.now]).map {
+                PendingOp(id: $0["id"], uid: $0["uid"], kind: OpKind(rawValue: $0["kind"])!, value: $0["value"])
+            }
+        }
+    }
+
+    /// The server took the op (or refused it for good). `removeMessage` when it left this mailbox.
+    public func finish(_ op: PendingOp, removeMessage: Bool) throws {
+        try db.write { db in
+            if removeMessage {
+                try db.execute(sql: "DELETE FROM message WHERE id = (SELECT messageId FROM op WHERE id = ?)", arguments: [op.id])
+            }
+            try db.execute(sql: "DELETE FROM op WHERE id = ?", arguments: [op.id])
+        }
+    }
+
+    public func nextOpDue() throws -> Date? {
+        try db.read { try Date.fetchOne($0, sql: "SELECT MIN(notBefore) FROM op") }
+    }
+
+    // MARK: search and contacts
+
+    static func index(_ id: Int64, _ p: MIME.Parsed, account: String, date: Date, _ db: Database) throws {
+        let people = ([p.from] + p.recipients).map { "\($0.name) \($0.address)" }.joined(separator: " ")
+        let body = String((p.text ?? p.html.map(MIME.stripTags) ?? "").prefix(100_000))
+        try db.execute(sql: "INSERT OR REPLACE INTO message_fts (rowid, subject, people, body) VALUES (?, ?, ?, ?)", arguments: [id, p.subject, people, body])
+        try noteContacts(p, account: account, date: date, db)
+    }
+
+    /// Mail you sent counts its recipients as people you write to; received mail counts the sender,
+    /// unless it came from a list or a no-reply address.
+    static func noteContacts(_ p: MIME.Parsed, account: String, date: Date, _ db: Database) throws {
+        let sentByMe = p.from.address.lowercased() == account.lowercased()
+        let people = sentByMe ? p.recipients : (p.listId == nil && !isNoReply(p.from.address) ? [p.from] : [])
+        // Your own addresses are never contacts, whichever account the mail came through.
+        let mine = Set(try String.fetchAll(db, sql: "SELECT lower(email) FROM account")).union([account.lowercased()])
+        for a in people where !mine.contains(a.address.lowercased()) {
+            try db.execute(sql: """
+                INSERT INTO contact (address, name, lastSeen, sent, received) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(address) DO UPDATE SET
+                    name = CASE WHEN excluded.name != '' THEN excluded.name ELSE name END,
+                    lastSeen = MAX(lastSeen, excluded.lastSeen),
+                    sent = sent + excluded.sent, received = received + excluded.received
+                """, arguments: [a.address, a.name, date, sentByMe ? 1 : 0, sentByMe ? 0 : 1])
+        }
+    }
+
+    public func noteSent(_ raw: Data, account: String) throws {
+        let p = MIME.parse(raw)
+        try db.write { try Self.noteContacts(p, account: account, date: .now, $0) }
+    }
+
+    static func isNoReply(_ address: String) -> Bool {
+        let local = address.split(separator: "@").first?.lowercased() ?? ""
+        return local.contains(/^(no-?reply|do-?not-?reply|mailer-daemon|bounces?|notifications?)/)
+    }
+
+    /// People you write to first, then the most recent.
+    public func contacts(matching prefix: String, limit: Int = 6) throws -> [Contact] {
+        let p = prefix.trimmingCharacters(in: .whitespaces)
+        guard !p.isEmpty else { return [] }
+        return try db.read { db in
+            try Contact.fetchAll(db, sql: """
+                SELECT * FROM contact
+                WHERE address LIKE ?1 || '%' OR name LIKE ?1 || '%' OR name LIKE '% ' || ?1 || '%'
+                ORDER BY sent > 0 DESC, lastSeen DESC LIMIT ?2
+                """, arguments: [p, limit])
+        }
+    }
+
+    /// Search-bar text → an FTS5 query: every word must match, each as a prefix.
+    public static func ftsQuery(_ text: String) -> String? {
+        let words = text.split(whereSeparator: \.isWhitespace).map { "\"" + $0.replacing("\"", with: "\"\"") + "\"*" }
+        return words.isEmpty ? nil : words.joined(separator: " ")
+    }
+
+    // MARK: drafts and outbox
+
+    public func save(_ draft: Draft) throws -> Draft {
+        try db.write { db in
+            var d = draft
+            d.updatedAt = .now
+            try d.save(db)
+            return d
+        }
+    }
+
+    public func draft(_ id: Int64) throws -> Draft? {
+        try db.read { try Draft.fetchOne($0, key: id) }
+    }
+
+    public func deleteDraft(_ id: Int64) throws {
+        _ = try db.write { try Draft.deleteOne($0, key: id) }
+    }
+
+    public func enqueue(draft: Int64, account: Int64, raw: Data, recipients: [String], sendAt: Date) throws {
+        try db.write { db in
+            try db.execute(sql: "DELETE FROM outbox WHERE draftId = ?", arguments: [draft])
+            try db.execute(sql: "INSERT INTO outbox (draftId, accountId, raw, recipients, sendAt) VALUES (?, ?, ?, ?, ?)",
+                           arguments: [draft, account, raw, recipients.joined(separator: "\n"), sendAt])
+        }
+    }
+
+    /// Undo send, or edit a message that failed: back to a plain draft.
+    public func unqueue(draft: Int64) throws {
+        try db.write { try $0.execute(sql: "DELETE FROM outbox WHERE draftId = ?", arguments: [draft]) }
+    }
+
+    public func dueOutbox() throws -> [OutboxItem] {
+        try db.read { try OutboxItem.fetchAll($0, sql: "SELECT * FROM outbox WHERE sendAt <= ? ORDER BY sendAt", arguments: [Date.now]) }
+    }
+
+    public func nextOutboxDue() throws -> Date? {
+        try db.read { try Date.fetchOne($0, sql: "SELECT MIN(sendAt) FROM outbox") }
+    }
+
+    /// Sent: the draft goes, and its outbox row with it.
+    public func sent(_ item: OutboxItem) throws {
+        try deleteDraft(item.draftId)
+    }
+
+    public func failed(_ item: OutboxItem, error: String, retryAt: Date) throws {
+        try db.write {
+            try $0.execute(sql: "UPDATE outbox SET attempts = attempts + 1, error = ?, sendAt = ? WHERE id = ?", arguments: [error, retryAt, item.id])
         }
     }
 
     // MARK: blobs
 
-    func blobURL(_ hash: String) -> URL {
+    static func blobURL(_ root: URL, _ hash: String) -> URL {
         let h = Array(hash)
-        return blobs.appending(path: "\(String(h[0..<2]))/\(String(h[2..<4]))/\(hash).eml")
+        return root.appending(path: "\(String(h[0..<2]))/\(String(h[2..<4]))/\(hash).eml")
     }
 
     /// Written once, never edited: the same message in two folders is stored once.
     func writeBlob(_ raw: Data) throws -> String {
         let hash = SHA256.hash(data: raw).map { String(format: "%02x", $0) }.joined()
-        let url = blobURL(hash)
+        let url = Self.blobURL(blobs, hash)
         if !FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try raw.write(to: url, options: [.atomic, .completeFileProtection])
@@ -242,6 +530,6 @@ public final class Store: Sendable {
     }
 
     public func raw(_ message: Message) throws -> Data {
-        try Data(contentsOf: blobURL(message.blob))
+        try Data(contentsOf: Self.blobURL(blobs, message.blob))
     }
 }

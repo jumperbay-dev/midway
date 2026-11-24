@@ -1,0 +1,5 @@
+.build/
+build/
+.swiftpm/
+*.xcconfig
+.DS_Store

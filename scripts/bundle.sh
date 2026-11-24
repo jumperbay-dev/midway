@@ -1,0 +1,25 @@
+#!/bin/sh
+# Builds midway.app with just the Command Line Tools. Ad-hoc signed with the hardened runtime;
+# Developer ID signing and notarization come with the Ship milestone.
+set -eu
+cd "$(dirname "$0")/.."
+swift build -c release --product midway
+app=build/midway.app
+rm -rf "$app" && mkdir -p "$app/Contents/MacOS"
+cp .build/release/midway "$app/Contents/MacOS/midway"
+cat > "$app/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleIdentifier</key><string>dev.midway.app</string>
+  <key>CFBundleName</key><string>midway</string>
+  <key>CFBundleExecutable</key><string>midway</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>LSMinimumSystemVersion</key><string>15.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+</dict></plist>
+PLIST
+codesign --force --options runtime --sign - "$app"
+echo "$app"

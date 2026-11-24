@@ -21,6 +21,11 @@ public enum MIME {
         public var recipients: [Address] = []
         public var replyTo: Address?
         public var references: String?
+        public var inReplyTo: String?
+        /// Message-IDs this one answers, from In-Reply-To and References, without angle brackets.
+        public var answers: [String] {
+            ((inReplyTo ?? "") + " " + (references ?? "")).matches(of: /<([^>]+)>/).map { String($0.output.1) }
+        }
         public var listId: String?
         public var date: Date?
         public var messageId: String?
@@ -42,6 +47,7 @@ public enum MIME {
         p.recipients = addresses(decodeWords(headers["to"] ?? "")) + addresses(decodeWords(headers["cc"] ?? ""))
         p.replyTo = headers["reply-to"].map { address(decodeWords($0)) }
         p.references = headers["references"]
+        p.inReplyTo = headers["in-reply-to"]
         p.listId = headers["list-id"]
         p.date = headers["date"].flatMap(date)
         p.messageId = headers["message-id"]?.trimmingCharacters(in: CharacterSet(charactersIn: "<> "))

@@ -30,7 +30,15 @@ struct MidwayApp: App {
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1280, height: 800)
-        .commands { TextFormattingCommands() }
+        .commands {
+            TextFormattingCommands()
+            CommandMenu("Go") {
+                Button("Command Bar") { model.commandBar = true }.keyboardShortcut("k")
+                Button("Focus and Reply") { model.mode = .focus }.keyboardShortcut(".")
+                Button("Search") { model.mode = .search }.keyboardShortcut("f")
+                Button("Keyboard Map") { model.mode = .keys }.keyboardShortcut("/", modifiers: [.command, .shift])
+            }
+        }
 
         // Compose opens as its own window, one per draft.
         WindowGroup("New message", id: "compose", for: Int64.self) { $draft in
@@ -46,13 +54,18 @@ final class AppModel {
     var accounts: [Account] = []
     var sync: [Int64: SyncState] = [:]
     var adding = false
+    /// What covers the three panes, and whether the command bar is open. Menu commands set these.
+    var mode: Mode = .mail
+    var commandBar = false
+    /// Gmail labels per account, for the command bar.
+    var labels: [Int64: [String]] = [:]
     var fatal: String?
     let store: Store?
     private var syncers: [Int64: AccountSync] = [:]
     private var credentials: [Int64: Credentials] = [:]
     private var outbox: Outbox?
-    /// The last archive, delete, star or read change, for ⌘Z.
-    var last: (kind: OpKind, value: Bool, message: Int64, accountId: Int64)?
+    /// Takes back the last action (archive, star, a pile, a snooze…), for ⌘Z.
+    var undoLast: (() -> Void)?
     private var tasks: [Task<Void, Never>] = []
 
     init() {
@@ -150,15 +163,23 @@ final class AppModel {
         guard let id = message.id else { return }
         let delay: TimeInterval = kind == .archive || kind == .trash ? 5 : 0
         try? store?.apply(kind, value, to: id, delay: delay)
-        last = (kind, value, id, message.accountId)
+        undoLast = { [weak self] in
+            try? self?.store?.apply(kind, !value, to: id)
+            self?.wake(message.accountId, after: 0)
+        }
         wake(message.accountId, after: delay)
     }
 
     func undo() {
-        guard let l = last else { return }
-        try? store?.apply(l.kind, !l.value, to: l.message)
-        last = nil
-        wake(l.accountId, after: 0)
+        undoLast?()
+        undoLast = nil
+    }
+
+    /// Reply later, Set aside and Snooze: local only, never sent to the server.
+    func setPile(_ message: Message, _ change: @escaping (inout Pile) -> Void) {
+        guard let store, let id = message.id, let before = try? store.pile(id) else { return }
+        try? store.setPile(id, change)
+        undoLast = { try? store.setPile(id) { $0 = before } }
     }
 
     func wake(_ account: Int64, after delay: TimeInterval) {
@@ -178,13 +199,19 @@ final class AppModel {
 
     // MARK: compose
 
-    func newDraft(replyingTo m: Message? = nil) -> Int64? {
+    func newDraft(replyingTo m: Message? = nil, all: Bool = false) -> Int64? {
         guard let store, let account = m?.accountId ?? accounts.first?.id else { return nil }
         var d = Draft(accountId: account)
         if let m, let raw = try? store.raw(m) {
             let p = MIME.parse(raw)
             let to = p.replyTo ?? p.from
             d.toList = to.name.isEmpty ? to.address : "\(to.name) <\(to.address)>"
+            if all {
+                // Everyone else who got it, minus you and whoever is already in To.
+                let mine = Set(accounts.map { $0.email.lowercased() } + [to.address.lowercased()])
+                d.ccList = p.recipients.filter { !mine.contains($0.address.lowercased()) }
+                    .map { $0.name.isEmpty ? $0.address : "\($0.name) <\($0.address)>" }.joined(separator: ", ")
+            }
             d.subject = m.subject.lowercased().hasPrefix("re:") ? m.subject : "Re: \(m.subject)"
             d.inReplyTo = m.messageId
             d.refs = ([p.references].compactMap { $0 } + (m.messageId.map { ["<\($0)>"] } ?? [])).joined(separator: " ")

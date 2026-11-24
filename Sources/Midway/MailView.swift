@@ -1,33 +1,57 @@
+import AppKit
 import GRDB
 import MidwayCore
 import SwiftUI
 
-/// Which list is showing: the unified Inbox, local drafts, or one account's label (Gmail labels act as folders).
+/// Which list is showing: the unified Inbox, a local pile, drafts, or one account's label (Gmail labels act as folders).
 enum Box: Hashable {
     case inbox
+    case replyLater
+    case setAside
+    case snoozed
     case drafts
     case label(account: Int64, name: String)
 
     var title: String {
         switch self {
         case .inbox: "Inbox"
+        case .replyLater: "Reply later"
+        case .setAside: "Set aside"
+        case .snoozed: "Snoozed"
         case .drafts: "Drafts"
         case .label(_, let name): Box.display(name)
         }
     }
 
-    var query: (name: String, account: Int64?) {
+    /// Label views hide snoozed mail until it is due, then show it as new (sorted by when it came back).
+    func fetch(_ db: Database, now: Date) throws -> [Message] {
+        let pileJoin = "SELECT message.* FROM message JOIN pile ON pile.messageId = message.id"
         switch self {
-        case .inbox, .drafts: (Label.inbox, nil)
-        case .label(let a, let n): (n, a)
+        case .replyLater: return try Message.fetchAll(db, sql: "\(pileJoin) WHERE pile.replyLater ORDER BY message.date")
+        case .setAside: return try Message.fetchAll(db, sql: "\(pileJoin) WHERE pile.setAside ORDER BY message.date DESC")
+        case .snoozed: return try Message.fetchAll(db, sql: "\(pileJoin) WHERE pile.snoozedUntil > ? ORDER BY pile.snoozedUntil", arguments: [now])
+        case .drafts: return []
+        case .inbox, .label:
+            let (name, account): (String, Int64?) = if case .label(let a, let n) = self { (n, a) } else { (Label.inbox, nil) }
+            return try Message.fetchAll(db, sql: """
+                SELECT message.* FROM message JOIN label ON label.messageId = message.id
+                LEFT JOIN pile ON pile.messageId = message.id
+                WHERE label.name = ? AND (? IS NULL OR message.accountId = ?) AND (pile.snoozedUntil IS NULL OR pile.snoozedUntil <= ?)
+                ORDER BY MAX(message.date, IFNULL(pile.snoozedUntil, '')) DESC
+                """, arguments: [name, account, account, now])
         }
     }
 
-    /// Gmail's system labels arrive as \Sent, \Starred…; user labels as they are.
+    /// Gmail's system labels arrive as \\Sent, \\Starred…; user labels as they are.
     static func display(_ label: String) -> String {
         ["\\Sent": "Sent", "\\Starred": "Starred", "\\Important": "Important", "\\Draft": "Gmail drafts", "\\Trash": "Trash"][label]
             ?? (label.hasPrefix("\\") ? String(label.dropFirst()) : label)
     }
+}
+
+/// What covers the three panes, if anything.
+enum Mode: Equatable {
+    case mail, search, focus, keys
 }
 
 /// Screen 01: sidebar 232, list 360, reader fills the rest. The keyboard does the rest.
@@ -35,9 +59,13 @@ struct MailView: View {
     let model: AppModel
     @Local private var box: Box = .inbox
     @Local private var messages: [Message] = []
+    @Local private var piles: [Int64: Pile] = [:]
     @Local private var selected: Int64?
-    @Local private var searching = false
+    @Local private var snoozing = false
     @Local private var toast: String?
+    /// Moves on when a snooze ends, so lists and counts refresh.
+    @Local private var now = Date.now
+    @Local private var pendingG = false
     @FocusState private var focused: Bool
     @Environment(\.openWindow) private var openWindow
 
@@ -45,63 +73,97 @@ struct MailView: View {
     var current: Message? { messages.first { $0.id == selected } }
 
     var body: some View {
-        HStack(spacing: 0) {
-            Sidebar(model: model, box: $box, compose: { compose(nil) })
-            if searching {
-                SearchView(model: model, open: { m in box = .inbox; searching = false; selected = m.id }, close: { searching = false; focused = true })
-            } else if box == .drafts {
-                DraftsList(model: model)
-            } else {
-                list
-                Rectangle().fill(T.line).frame(width: 1)
-                if let current, let store = model.store {
-                    Reader(message: current, store: store, act: act, reply: { compose(current) }).id(current.id)
-                } else {
-                    Text(messages.isEmpty ? "Nothing here yet" : "No message selected")
-                        .foregroundStyle(T.faint).frame(maxWidth: .infinity, maxHeight: .infinity)
+        Group {
+            switch model.mode {
+            case .focus:
+                FocusView(model: model, close: { model.mode = .mail; focused = true })
+            case .keys:
+                KeyboardMap(close: { model.mode = .mail; focused = true })
+            case .mail, .search:
+                HStack(spacing: 0) {
+                    Sidebar(model: model, box: $box, now: now, compose: { compose(nil) })
+                    if model.mode == .search {
+                        SearchView(model: model, open: { m in box = .inbox; model.mode = .mail; selected = m.id }, close: { model.mode = .mail; focused = true })
+                    } else if box == .drafts {
+                        DraftsList(model: model)
+                    } else {
+                        list
+                        Rectangle().fill(T.line).frame(width: 1)
+                        if let current, let store = model.store {
+                            Reader(message: current, store: store, pile: piles[current.id ?? -1], snoozing: $snoozing,
+                                   act: act, setPile: pile, snooze: snooze, reply: { compose(current) })
+                                .id(current.id)
+                        } else {
+                            Text(messages.isEmpty ? (box == .inbox ? "All caught up" : "Nothing here") : "No message selected")
+                                .foregroundStyle(T.faint).frame(maxWidth: .infinity, maxHeight: .infinity)
+                        }
+                    }
                 }
             }
         }
         .overlay(alignment: .bottom) { Toasts(model: model, toast: $toast, openWindow: { openWindow(id: "compose", value: $0) }) }
+        .overlay {
+            if model.commandBar {
+                CommandBar(model: model, commands: commands, open: { m in box = .inbox; model.mode = .mail; selected = m.id }, close: { model.commandBar = false; focused = true })
+            }
+        }
         .ignoresSafeArea()
         .focusable().focused($focused).focusEffectDisabled()
         .onAppear { focused = true }
         .onKeyPress(characters: ["j", "k"]) { press in step(press.characters == "j" ? 1 : -1); return .handled }
         .onKeyPress(.downArrow) { step(1); return .handled }
         .onKeyPress(.upArrow) { step(-1); return .handled }
-        .onKeyPress(characters: ["e", "#", "s", "u", "r", "c", "/"]) { press in key(press.characters) }
-        .onKeyPress(characters: ["z"]) { press in
-            guard press.modifiers.contains(.command), model.last != nil else { return .ignored }
-            model.undo(); toast = nil; return .handled
-        }
+        .onKeyPress(characters: ["e", "#", "s", "u", "r", "c", "/", "l", "y", "h", "z", "g", "i", "?"]) { press in key(press) }
         .onChange(of: selected) { if let current { model.open(current) } }
-        .onChange(of: box) { selected = nil; searching = false; focused = true }
-        .task(id: box) { await observe() }
+        .onChange(of: box) { selected = nil; model.mode = .mail; focused = true }
+        .task(id: [box, now] as [AnyHashable]) { await observe() }
+        .task(id: piles) { await tick() }
         .sheet(isPresented: Bindable(model).adding) {
             AddAccount(model: model, back: { model.adding = false }).padding(.bottom, 48).background(T.bg)
         }
     }
 
-    func key(_ c: String) -> KeyPress.Result {
+    func key(_ press: KeyPress) -> KeyPress.Result {
+        let c = press.characters
+        if press.modifiers.contains(.command) {
+            guard c == "z", model.undoLast != nil else { return .ignored }
+            undo(); return .handled
+        }
+        // g i: go to inbox.
+        if pendingG {
+            pendingG = false
+            if c == "i" { box = .inbox; return .handled }
+        }
         switch c {
-        case "/": searching = true
+        case "g": pendingG = true
+        case "/": model.mode = .search
+        case "?": model.mode = .keys
         case "c": compose(nil)
+        case "z": if model.undoLast != nil { undo() }
         case "r": if let current { compose(current) }
-        case "e", "#", "s", "u":
+        case "h": if current != nil { snoozing = true }
+        case "e", "#", "s", "u", "l", "y":
             guard let current else { return .ignored }
-            act(c == "e" ? .archive : c == "#" ? .trash : c == "s" ? .flagged : .seen, current)
+            switch c {
+            case "l": pile(.replyLater, current)
+            case "y": pile(.setAside, current)
+            default: act(c == "e" ? .archive : c == "#" ? .trash : c == "s" ? .flagged : .seen, current)
+            }
         default: return .ignored
         }
         return .handled
     }
 
+    func undo() {
+        model.undo()
+        toast = nil
+        focused = true
+    }
+
     /// Archive and delete move the selection on; star and unread toggle in place.
     func act(_ kind: OpKind, _ m: Message) {
         let value = switch kind { case .flagged: !m.flagged; case .seen: !m.seen; default: true }
-        if kind == .archive || kind == .trash {
-            let i = messages.firstIndex { $0.id == m.id } ?? 0
-            selected = messages.indices.contains(i + 1) ? messages[i + 1].id : i > 0 ? messages[i - 1].id : nil
-        }
+        if kind == .archive || kind == .trash { moveOn(from: m) }
         model.act(kind, value, m)
         toast = switch kind {
         case .archive: "Archived"
@@ -112,8 +174,75 @@ struct MailView: View {
         focused = true
     }
 
+    enum PileKind { case replyLater, setAside }
+
+    func pile(_ kind: PileKind, _ m: Message) {
+        let on = !(kind == .replyLater ? piles[m.id ?? -1]?.replyLater ?? false : piles[m.id ?? -1]?.setAside ?? false)
+        if !on && (box == .replyLater || box == .setAside) { moveOn(from: m) }
+        model.setPile(m) { if kind == .replyLater { $0.replyLater = on } else { $0.setAside = on } }
+        toast = switch kind {
+        case .replyLater: on ? "Reply later" : "Out of Reply later"
+        case .setAside: on ? "Set aside" : "No longer set aside"
+        }
+        focused = true
+    }
+
+    func snooze(_ m: Message, _ until: Date?, _ wakeOnReply: Bool) {
+        snoozing = false
+        if until != nil || box == .snoozed { moveOn(from: m) }
+        model.setPile(m) { $0.snoozedUntil = until; $0.wakeOnReply = wakeOnReply }
+        toast = until.map { "Snoozed until \($0.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated).hour().minute()))" } ?? "Unsnoozed"
+        focused = true
+    }
+
+    func moveOn(from m: Message) {
+        let i = messages.firstIndex { $0.id == m.id } ?? 0
+        selected = messages.indices.contains(i + 1) ? messages[i + 1].id : i > 0 ? messages[i - 1].id : nil
+    }
+
     func compose(_ replyTo: Message?) {
         if let id = model.newDraft(replyingTo: replyTo) { openWindow(id: "compose", value: id) }
+    }
+
+    /// Everything the command bar can do, in its groups. Message actions apply to the selected message.
+    var commands: [CommandBar.Command] {
+        var out: [CommandBar.Command] = []
+        if let m = current {
+            let p = piles[m.id ?? -1]
+            let group = "This message · \(m.subject.prefix(40))"
+            out += [
+                .init(group: group, title: "Archive", key: "e") { act(.archive, m) },
+                .init(group: group, title: "Reply", key: "r") { compose(m) },
+                .init(group: group, title: "Reply to all", key: nil) { if let id = model.newDraft(replyingTo: m, all: true) { openWindow(id: "compose", value: id) } },
+                .init(group: group, title: p?.replyLater == true ? "Remove from Reply later" : "Reply later", key: "l") { pile(.replyLater, m) },
+                .init(group: group, title: p?.setAside == true ? "Remove from Set aside" : "Set aside", key: "y") { pile(.setAside, m) },
+                .init(group: group, title: "Snooze…", key: "h") { snoozing = true },
+                .init(group: group, title: m.flagged ? "Unstar" : "Star", key: "s") { act(.flagged, m) },
+                .init(group: group, title: m.seen ? "Mark unread" : "Mark read", key: "u") { act(.seen, m) },
+                .init(group: group, title: "Delete", key: "#") { act(.trash, m) },
+            ]
+        }
+        out += [
+            .init(group: "Go to", title: "Inbox", key: "g i") { box = .inbox },
+            .init(group: "Go to", title: "Reply later", key: nil) { box = .replyLater },
+            .init(group: "Go to", title: "Set aside", key: nil) { box = .setAside },
+            .init(group: "Go to", title: "Snoozed", key: nil) { box = .snoozed },
+            .init(group: "Go to", title: "Drafts", key: nil) { box = .drafts },
+        ]
+        for a in model.accounts where a.kind == .google {
+            for name in model.labels[a.id ?? -1] ?? [] {
+                out.append(.init(group: "Go to", title: "\(Box.display(name)) · \(a.email)", key: nil) { box = .label(account: a.id!, name: name) })
+            }
+        }
+        out += [
+            .init(group: "Commands", title: "New message", key: "c") { compose(nil) },
+            .init(group: "Commands", title: "Focus and reply", key: "⌘.") { model.mode = .focus },
+            .init(group: "Commands", title: "Search mail", key: "/") { model.mode = .search },
+            .init(group: "Commands", title: "Keyboard map", key: "?") { model.mode = .keys },
+            .init(group: "Commands", title: "Add account", key: nil) { model.adding = true },
+        ]
+        if model.undoLast != nil { out.append(.init(group: "Commands", title: "Undo", key: "z") { undo() }) }
+        return out
     }
 
     var list: some View {
@@ -122,7 +251,7 @@ struct MailView: View {
                 Text(box.title).font(.h1)
                 Spacer()
                 Text("\(unread) unread").font(.meta12).foregroundStyle(T.muted)
-                Button { searching = true } label: { Kbd(key: "/") }.buttonStyle(.plain).help("Search (/)").accessibilityLabel("Search")
+                Button { model.mode = .search } label: { Kbd(key: "/") }.buttonStyle(.plain).help("Search (/)").accessibilityLabel("Search")
             }
             .padding(.horizontal, 16).frame(height: 56)
             .overlay(alignment: .bottom) { Rectangle().fill(T.line).frame(height: 1) }
@@ -131,7 +260,7 @@ struct MailView: View {
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         ForEach(messages) { m in
-                            Row(message: m, selected: m.id == selected)
+                            Row(message: m, pile: piles[m.id ?? -1], now: now, selected: m.id == selected)
                                 .id(m.id)
                                 .onTapGesture { selected = m.id; focused = true }
                         }
@@ -149,18 +278,27 @@ struct MailView: View {
     }
 
     func observe() async {
-        guard let store = model.store, box != .drafts else { return }
-        let q = box.query
+        guard let store = model.store else { return }
+        let (box, now) = (self.box, self.now)
         let obs = ValueObservation.tracking { db in
-            try Message.fetchAll(db, sql: """
-                SELECT message.* FROM message JOIN label ON label.messageId = message.id
-                WHERE label.name = ? AND (? IS NULL OR message.accountId = ?)
-                ORDER BY message.date DESC
-                """, arguments: [q.name, q.account, q.account])
+            (try box.fetch(db, now: now), try Pile.fetchAll(db))
         }
         do {
-            for try await rows in obs.values(in: store.db) { messages = rows }
+            for try await (rows, p) in obs.values(in: store.db) {
+                messages = rows
+                piles = Dictionary(uniqueKeysWithValues: p.map { ($0.messageId, $0) })
+            }
         } catch {}
+    }
+
+    /// Wakes when the next snooze ends (or every 5 minutes, which also catches new snoozes).
+    func tick() async {
+        while !Task.isCancelled {
+            let next = (try? model.store?.nextSnoozeEnd()).flatMap { $0 }
+            let wait = min(max(next.map { $0.timeIntervalSinceNow } ?? 300, 1), 300)
+            try? await Task.sleep(for: .seconds(wait + 0.5))
+            now = .now
+        }
     }
 }
 
@@ -286,6 +424,8 @@ struct DraftsList: View {
 
 struct Row: View {
     let message: Message
+    var pile: Pile? = nil
+    var now: Date = .now
     let selected: Bool
 
     var body: some View {
@@ -301,6 +441,16 @@ struct Row: View {
             }
             Text(message.subject.isEmpty ? "(no subject)" : message.subject).lineLimit(1)
             Text(message.preview).font(.meta12).foregroundStyle(T.faint).lineLimit(1)
+            if let pile, pile.replyLater || pile.setAside || pile.snoozedUntil != nil {
+                HStack(spacing: 4) {
+                    if pile.replyLater { chip("Reply later", T.gold) }
+                    if pile.setAside { chip("Set aside", T.muted) }
+                    if let until = pile.snoozedUntil {
+                        until > now ? chip("Until \(until.formatted(.dateTime.weekday(.abbreviated).hour().minute()))", T.muted) : chip("Back from snooze", T.teal)
+                    }
+                }
+                .padding(.top, 6)
+            }
         }
         .font(.body13)
         .padding(.leading, 32).padding(.trailing, 16).padding(.vertical, 12)
@@ -311,6 +461,12 @@ struct Row: View {
         }
         .overlay(alignment: .bottom) { Rectangle().fill(T.line).frame(height: 1) }
         .contentShape(Rectangle())
+    }
+
+    func chip(_ text: String, _ color: Color) -> some View {
+        Text(text).font(.system(size: 11)).foregroundStyle(color)
+            .padding(.horizontal, 8).frame(height: 18)
+            .background(Capsule().fill(color.opacity(0.12)))
     }
 
     /// 09:14 today, Mon this week, 18 Nov before that.
@@ -325,8 +481,12 @@ struct Row: View {
 struct Sidebar: View {
     let model: AppModel
     @Binding var box: Box
+    let now: Date
     let compose: () -> Void
     @Local private var inboxUnread = 0
+    @Local private var later = 0
+    @Local private var aside = 0
+    @Local private var snoozed = 0
     @Local private var drafts = 0
     @Local private var failed = 0
     @Local private var labels: [LabelRow] = []
@@ -346,6 +506,9 @@ struct Sidebar: View {
                 }
                 .buttonStyle(.plain).foregroundStyle(T.muted).padding(.bottom, 8)
                 item(.inbox, "Inbox", inboxUnread)
+                item(.replyLater, "Reply later", later)
+                item(.setAside, "Set aside", aside)
+                if snoozed > 0 { item(.snoozed, "Snoozed", snoozed) }
                 if drafts > 0 { item(.drafts, failed > 0 ? "Drafts · \(failed) not sent" : "Drafts", drafts) }
                 ForEach(model.accounts.filter { $0.kind == .google }, id: \.id) { a in
                     let rows = labels.filter { $0.accountId == a.id }
@@ -372,7 +535,7 @@ struct Sidebar: View {
         .frame(width: T.sidebar)
         .background(T.surface)
         .overlay(alignment: .trailing) { Rectangle().fill(T.line).frame(width: 1) }
-        .task { await observe() }
+        .task(id: now) { await observe() }
     }
 
     func item(_ b: Box, _ title: String, _ count: Int) -> some View {
@@ -380,7 +543,7 @@ struct Sidebar: View {
             HStack {
                 Text(title).lineLimit(1)
                 Spacer()
-                if count > 0 { Text("\(count)").font(.meta12).foregroundStyle(b == .inbox ? T.teal : b == .drafts && failed > 0 ? T.gold : T.faint) }
+                if count > 0 { Text("\(count)").font(.meta12).foregroundStyle(b == .inbox ? T.teal : b == .replyLater || (b == .drafts && failed > 0) ? T.gold : T.faint) }
             }
             .padding(.horizontal, 12).frame(height: b == .inbox ? 32 : 28)
             .background(RoundedRectangle(cornerRadius: 4).fill(box == b ? T.sel : .clear))
@@ -391,11 +554,14 @@ struct Sidebar: View {
 
     func observe() async {
         guard let store = model.store else { return }
+        let now = self.now
         let obs = ValueObservation.tracking { db in
             let inbox = try Int.fetchOne(db, sql: """
-                SELECT COUNT(*) FROM message JOIN label ON label.messageId = message.id
-                WHERE label.name = ? AND message.seen = 0
-                """, arguments: [Label.inbox]) ?? 0
+                SELECT COUNT(*) FROM message JOIN label ON label.messageId = message.id LEFT JOIN pile ON pile.messageId = message.id
+                WHERE label.name = ? AND message.seen = 0 AND (pile.snoozedUntil IS NULL OR pile.snoozedUntil <= ?)
+                """, arguments: [Label.inbox, now]) ?? 0
+            let piles = try GRDB.Row.fetchOne(db, sql: "SELECT SUM(replyLater), SUM(setAside), SUM(snoozedUntil > ?) FROM pile", arguments: [now])
+            let counts = [0, 1, 2].map { (piles?[$0] as Int?) ?? 0 }
             let rows = try LabelRow.fetchAll(db, sql: """
                 SELECT message.accountId, label.name, SUM(message.seen = 0) AS unread
                 FROM label JOIN message ON message.id = label.messageId
@@ -403,10 +569,16 @@ struct Sidebar: View {
                 """, arguments: [Label.inbox])
             let drafts = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM draft") ?? 0
             let failed = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM outbox WHERE error IS NOT NULL") ?? 0
-            return (inbox, rows, drafts, failed)
+            return (inbox, rows, drafts, failed, counts)
         }
         do {
-            for try await (inbox, rows, d, f) in obs.values(in: store.db) { inboxUnread = inbox; labels = rows; drafts = d; failed = f }
+            for try await (inbox, rows, d, f, c) in obs.values(in: store.db) {
+                inboxUnread = inbox; labels = rows; drafts = d; failed = f
+                (later, aside, snoozed) = (c[0], c[1], c[2])
+                // Dock badge only in v1: unread in the Inbox, snoozed mail not counted.
+                NSApplication.shared.dockTile.badgeLabel = inbox > 0 ? "\(inbox)" : nil
+                model.labels = Dictionary(grouping: rows, by: { $0.accountId }).mapValues { $0.map { $0.name } }
+            }
         } catch {}
     }
 
@@ -437,7 +609,11 @@ struct Sidebar: View {
 struct Reader: View {
     let message: Message
     let store: Store
+    let pile: Pile?
+    @Binding var snoozing: Bool
     let act: (OpKind, Message) -> Void
+    let setPile: (MailView.PileKind, Message) -> Void
+    let snooze: (Message, Date?, Bool) -> Void
     let reply: () -> Void
     @Local private var html: String?
 
@@ -450,6 +626,12 @@ struct Reader: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 4) {
                 tool("archivebox", "Archive (e)") { act(.archive, message) }
+                tool(pile?.replyLater == true ? "arrowshape.turn.up.left.circle.fill" : "arrowshape.turn.up.left.circle", "Reply later (l)") { setPile(.replyLater, message) }
+                tool(pile?.setAside == true ? "bookmark.fill" : "bookmark", "Set aside (y)") { setPile(.setAside, message) }
+                tool(pile?.snoozedUntil.map { $0 > .now } == true ? "alarm.fill" : "alarm", "Snooze (h)") { snoozing = true }
+                    .popover(isPresented: $snoozing, arrowEdge: .bottom) {
+                        SnoozePicker(snoozed: pile?.snoozedUntil.map { $0 > .now } == true) { snooze(message, $0, $1) }
+                    }
                 tool("trash", "Delete (#)") { act(.trash, message) }
                 tool(message.flagged ? "star.fill" : "star", "Star (s)") { act(.flagged, message) }
                 tool(message.seen ? "envelope.badge" : "envelope.open", message.seen ? "Mark unread (u)" : "Mark read (u)") { act(.seen, message) }
@@ -479,7 +661,7 @@ struct Reader: View {
             .padding(.top, 24)
 
             HStack(spacing: 16) {
-                hint("e", "archive"); hint("#", "delete"); hint("s", "star"); hint("r", "reply"); hint("/", "search"); hint("⌘Z", "undo")
+                hint("e", "archive"); hint("l", "reply later"); hint("h", "snooze"); hint("r", "reply"); hint("/", "search"); hint("⌘K", "command")
             }
             .font(.meta12).foregroundStyle(T.faint).padding(.top, 16)
         }
@@ -491,7 +673,7 @@ struct Reader: View {
 
     func tool(_ icon: String, _ help: String, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: icon).font(.system(size: 14)).foregroundStyle(icon == "star.fill" ? T.gold : T.muted)
+            Image(systemName: icon).font(.system(size: 14)).foregroundStyle(icon == "star.fill" || icon.hasSuffix("circle.fill") ? T.gold : icon.hasSuffix(".fill") ? T.text : T.muted)
                 .frame(width: 32, height: 32).contentShape(Rectangle())
         }
         .buttonStyle(.plain).help(help).accessibilityLabel(help)

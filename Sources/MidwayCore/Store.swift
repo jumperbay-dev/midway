@@ -75,6 +75,19 @@ public struct PendingOp: Sendable, Equatable {
     public var value: Bool
 }
 
+/// Local-only triage state, never synced: Reply later, Set aside and Snooze.
+public struct Pile: Codable, Hashable, Sendable, FetchableRecord, PersistableRecord {
+    public var messageId: Int64
+    public var replyLater = false
+    public var setAside = false
+    public var snoozedUntil: Date?
+    /// Bring back early if someone replies in the thread.
+    public var wakeOnReply = true
+
+    public init(messageId: Int64) { self.messageId = messageId }
+    var isEmpty: Bool { !replyLater && !setAside && snoozedUntil == nil }
+}
+
 public struct Contact: Codable, Hashable, Sendable, FetchableRecord {
     public var address: String
     public var name: String
@@ -238,6 +251,15 @@ public final class Store: Sendable {
                 try index(r["id"], MIME.parse(raw), account: r["email"], date: r["date"], db)
             }
         }
+        m.registerMigration("v4-triage") { db in
+            try db.create(table: "pile") { t in
+                t.primaryKey("messageId", .integer).references("message", onDelete: .cascade)
+                t.column("replyLater", .boolean).notNull().defaults(to: false)
+                t.column("setAside", .boolean).notNull().defaults(to: false)
+                t.column("snoozedUntil", .datetime).indexed()
+                t.column("wakeOnReply", .boolean).notNull().defaults(to: true)
+            }
+        }
         return m
     }
 
@@ -302,7 +324,19 @@ public final class Store: Sendable {
             try setLabels(state.labels, message: id, db)
             let email = try String.fetchOne(db, sql: "SELECT email FROM account WHERE id = ?", arguments: [account]) ?? ""
             try Self.index(id, p, account: email, date: m.date, db)
+            try Self.wakeSnoozed(answeredBy: p, thread: state.gmThrId, db)
         }
+    }
+
+    /// A reply from someone else brings a snoozed message back now, if it asked for that.
+    static func wakeSnoozed(answeredBy p: MIME.Parsed, thread: Int64?, _ db: Database) throws {
+        let mine = Set(try String.fetchAll(db, sql: "SELECT lower(email) FROM account"))
+        guard !mine.contains(p.from.address.lowercased()), !p.answers.isEmpty || thread != nil else { return }
+        let ids = p.answers.isEmpty ? "NULL" : p.answers.map { _ in "?" }.joined(separator: ",")
+        try db.execute(sql: """
+            UPDATE pile SET snoozedUntil = ? WHERE wakeOnReply = 1 AND snoozedUntil > ? AND messageId IN
+                (SELECT id FROM message WHERE messageId IN (\(ids)) OR (gmThrId IS NOT NULL AND gmThrId = ?))
+            """, arguments: StatementArguments([Date.now, Date.now] + p.answers.map { $0 as (any DatabaseValueConvertible)? } + [thread]))
     }
 
     /// Server flags and labels win, except where a local action is still queued for that message.
@@ -402,6 +436,25 @@ public final class Store: Sendable {
 
     public func nextOpDue() throws -> Date? {
         try db.read { try Date.fetchOne($0, sql: "SELECT MIN(notBefore) FROM op") }
+    }
+
+    // MARK: piles
+
+    public func pile(_ message: Int64) throws -> Pile {
+        try db.read { try Pile.fetchOne($0, key: message) } ?? Pile(messageId: message)
+    }
+
+    /// Changes a message's piles; an empty pile row is removed.
+    public func setPile(_ message: Int64, _ change: (inout Pile) -> Void) throws {
+        try db.write { db in
+            var p = try Pile.fetchOne(db, key: message) ?? Pile(messageId: message)
+            change(&p)
+            if p.isEmpty { _ = try Pile.deleteOne(db, key: message) } else { try p.save(db) }
+        }
+    }
+
+    public func nextSnoozeEnd() throws -> Date? {
+        try db.read { try Date.fetchOne($0, sql: "SELECT MIN(snoozedUntil) FROM pile WHERE snoozedUntil > ?", arguments: [Date.now]) }
     }
 
     // MARK: search and contacts

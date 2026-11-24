@@ -14,6 +14,12 @@ Done so far:
 
    Not yet: Drafts saved to the server's Drafts folder, Fastmail Archive/Trash views (only INBOX syncs there),
    backfill beyond the newest 200, lists/quotes/images in the composer.
+4. **Triage**: local piles: Reply later (`l`), Set aside (`y`), snooze (`h`) with presets or typed times
+   ("fri 9am", "in 3 days"), brought back early when someone replies. Focus and reply (`⌘.`) works through Reply later
+   with reply-all drafts and Send and next (`⌘↩`). Command bar (`⌘K`), keyboard map (`?`), `g i` for the Inbox, and a
+   Dock badge with Inbox unread.
+
+   Not yet: "When I'm free" and travel-based snoozes, key rebinding, Claude in Focus, piles synced across Macs.
 
 Builds with the Command Line Tools alone (no Xcode, no CI).
 

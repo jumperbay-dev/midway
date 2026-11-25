@@ -11,7 +11,7 @@ public struct Tag: Codable, Hashable, Sendable, Identifiable, FetchableRecord, M
     public mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
 }
 
-/// A saved search that tags what it finds. Without a tag it lets the sender past the Screener.
+/// A saved search that tags what it finds. Rules without a tag (the removed Screener's "let through") are ignored.
 public struct TagRule: Codable, Hashable, Sendable, Identifiable, FetchableRecord, MutablePersistableRecord {
     public static let databaseTableName = "tag_rule"
     public var id: Int64?
@@ -58,26 +58,9 @@ public enum Provenance {
 }
 
 extension Store {
-    /// The Inbox shows mail from senders you let through; everyone else waits in the Screener.
-    public static let allowed = "EXISTS (SELECT 1 FROM screener WHERE screener.address = message.fromAddr AND screener.decision = 'allow')"
-    public static let undecided = "NOT EXISTS (SELECT 1 FROM screener WHERE screener.address = message.fromAddr)"
-
     // MARK: ingest
 
-    /// Runs in the insert's transaction: your own mail is let through, rules tag and allow,
-    /// and mail from a blocked sender is archived.
-    static func screenAndTag(_ id: Int64, from: String, account: String, _ db: Database) throws {
-        let mine = Set(try String.fetchAll(db, sql: "SELECT lower(email) FROM account")).union([account.lowercased()])
-        if mine.contains(from.lowercased()) {
-            try db.execute(sql: "INSERT OR IGNORE INTO screener (address, decision) VALUES (?, 'allow')", arguments: [from])
-        }
-        try runRules(only: [id], tag: nil, db)
-        let blocked = try String.fetchOne(db, sql: "SELECT decision FROM screener WHERE address = ?", arguments: [from]) == "block"
-        let inInbox = try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM label WHERE messageId = ? AND name = ?)", arguments: [id, Label.inbox]) ?? false
-        if blocked && inInbox { try queue(.archive, true, to: id, delay: 0, db) }
-    }
-
-    /// Applies enabled rules (one tag's, or all) to some messages (or all). Returns how many links or decisions it added.
+    /// Applies enabled rules (one tag's, or all) to some messages (or all). Returns how many links it added.
     @discardableResult
     static func runRules(only ids: [Int64]?, tag: Int64?, _ db: Database) throws -> Int {
         try run(try TagRule.fetchAll(db, sql: "SELECT * FROM tag_rule WHERE enabled ORDER BY id").filter { tag == nil || $0.tagId == tag }, only: ids, db)
@@ -88,18 +71,11 @@ extension Store {
         let scope = ids.map { " AND message.id IN (\($0.map(String.init).joined(separator: ",")))" } ?? ""
         var added = 0
         for r in rules {
-            guard let q = try? Query(r.query) else { continue }
-            if let t = r.tagId {
-                try db.execute(sql: """
-                    INSERT OR IGNORE INTO tag_link (key, tagId, source, createdAt)
-                    SELECT DISTINCT message.key, ?, ?, ? FROM message WHERE message.key IS NOT NULL AND (\(q.sql))\(scope)
-                    """, arguments: [t, "rule:\(r.id ?? 0)", Date.now] + q.arguments)
-            } else {
-                try db.execute(sql: """
-                    INSERT OR IGNORE INTO screener (address, decision)
-                    SELECT DISTINCT message.fromAddr, 'allow' FROM message WHERE (\(q.sql))\(scope)
-                    """, arguments: q.arguments)
-            }
+            guard let t = r.tagId, let q = try? Query(r.query) else { continue }
+            try db.execute(sql: """
+                INSERT OR IGNORE INTO tag_link (key, tagId, source, createdAt)
+                SELECT DISTINCT message.key, ?, ?, ? FROM message WHERE message.key IS NOT NULL AND (\(q.sql))\(scope)
+                """, arguments: [t, "rule:\(r.id ?? 0)", Date.now] + q.arguments)
             added += db.changesCount
         }
         return added
@@ -143,12 +119,11 @@ extension Store {
     /// Checks the query first; a rule that cannot parse is never stored. A rule without a tag lets
     /// matching senders through at once; a tag rule waits for new mail or a re-run.
     @discardableResult
-    public func addRule(_ query: String, tag: Int64?) throws -> TagRule {
+    public func addRule(_ query: String, tag: Int64) throws -> TagRule {
         _ = try Query(query)
         return try db.write { db in
             var r = TagRule(tagId: tag, query: query)
             try r.insert(db)
-            if tag == nil { try Self.run([r], only: nil, db) }
             return r
         }
     }
@@ -185,57 +160,28 @@ extension Store {
         try db.write { try Self.runRules(only: nil, tag: tag, $0) }
     }
 
-    // MARK: screener
-
-    /// Allow lets the sender's mail into the Inbox. Block archives what is there (unread) and everything later.
-    /// Returns the messages it archived, for undo.
-    @discardableResult
-    public func decide(_ address: String, allow: Bool) throws -> [Int64] {
-        try db.write { db in
-            try db.execute(sql: "INSERT OR REPLACE INTO screener (address, decision) VALUES (?, ?)", arguments: [address, allow ? "allow" : "block"])
-            guard !allow else { return [] }
-            let ids = try Int64.fetchAll(db, sql: """
-                SELECT message.id FROM message JOIN label ON label.messageId = message.id
-                WHERE label.name = ? AND message.fromAddr = ? COLLATE NOCASE
-                """, arguments: [Label.inbox, address])
-            for id in ids { try Self.queue(.archive, true, to: id, delay: 5, db) }
-            return ids
-        }
-    }
-
-    /// Takes a decision back: the sender waits in the Screener again.
-    public func undecide(_ address: String, unarchive ids: [Int64]) throws {
-        try db.write { db in
-            try db.execute(sql: "DELETE FROM screener WHERE address = ?", arguments: [address])
-            for id in ids { try Self.queue(.archive, false, to: id, delay: 0, db) }
-        }
-    }
-
     // MARK: export
 
     struct Export: Codable {
         struct T: Codable { var name: String; var colour: Int }
         struct R: Codable { var tag: String?; var query: String; var enabled: Bool }
         struct L: Codable { var key: String; var tag: String; var source: String; var createdAt: Date }
-        struct S: Codable { var address: String; var decision: String }
         var version = 1
         var tags: [T]
         var rules: [R]
         var links: [L]
-        var screener: [S]
     }
 
-    /// Tags, rules, links by Message-ID and Screener decisions, as JSON for Time Machine-less moves to a new Mac.
+    /// Tags, rules and links by Message-ID, as JSON for Time Machine-less moves to a new Mac.
     public func exportTags() throws -> Data {
         try db.read { db in
             let names = Dictionary(uniqueKeysWithValues: try Tag.fetchAll(db).map { ($0.id!, $0.name) })
             let e = Export(
                 tags: try Tag.fetchAll(db).map { .init(name: $0.name, colour: $0.colour) },
-                rules: try TagRule.fetchAll(db).map { .init(tag: $0.tagId.flatMap { names[$0] }, query: $0.query, enabled: $0.enabled) },
+                rules: try TagRule.fetchAll(db).compactMap { r in r.tagId.flatMap { names[$0] }.map { .init(tag: $0, query: r.query, enabled: r.enabled) } },
                 links: try Row.fetchAll(db, sql: "SELECT key, tagId, source, createdAt FROM tag_link").compactMap { r in
                     names[r["tagId"]].map { Export.L(key: r["key"], tag: $0, source: r["source"], createdAt: r["createdAt"]) }
-                },
-                screener: try Row.fetchAll(db, sql: "SELECT address, decision FROM screener").map { .init(address: $0["address"], decision: $0["decision"]) })
+                })
             let enc = JSONEncoder()
             enc.outputFormatting = [.prettyPrinted, .sortedKeys]
             enc.dateEncodingStrategy = .iso8601
@@ -254,17 +200,13 @@ extension Store {
             }
             let ids = Dictionary(try Row.fetchAll(db, sql: "SELECT name, id FROM tag").map { (($0["name"] as String).lowercased(), $0["id"] as Int64) }, uniquingKeysWith: { a, _ in a })
             for r in e.rules where (try? Query(r.query)) != nil {
-                let tag = r.tag.flatMap { ids[$0.lowercased()] }
-                guard r.tag == nil || tag != nil else { continue }
+                guard let tag = r.tag.flatMap({ ids[$0.lowercased()] }) else { continue }
                 let exists = try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM tag_rule WHERE tagId IS ? AND query = ?)", arguments: [tag, r.query]) ?? false
                 if !exists { try db.execute(sql: "INSERT INTO tag_rule (tagId, query, enabled) VALUES (?, ?, ?)", arguments: [tag, r.query, r.enabled]) }
             }
             for l in e.links {
                 guard let tag = ids[l.tag.lowercased()] else { continue }
                 try db.execute(sql: "INSERT OR IGNORE INTO tag_link (key, tagId, source, createdAt) VALUES (?, ?, ?, ?)", arguments: [l.key, tag, l.source, l.createdAt])
-            }
-            for s in e.screener where ["allow", "block"].contains(s.decision) {
-                try db.execute(sql: "INSERT OR IGNORE INTO screener (address, decision) VALUES (?, ?)", arguments: [s.address, s.decision])
             }
         }
     }

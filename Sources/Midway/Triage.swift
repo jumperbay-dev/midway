@@ -203,8 +203,7 @@ struct KeyboardMap: View {
             .padding(.top, 24)
             HStack(alignment: .top, spacing: 48) {
                 list("Keys", [("Delete", "#"), ("Search", "/"), ("This map", "?")])
-                list("Sequences", [("Go to inbox", "g i"), ("Go to Screener", "g s")])
-                list("In the Screener", [("Allow", "y"), ("Block", "n"), ("Allow and tag", "t")])
+                list("Sequences", [("Go to inbox", "g i")])
                 list("With modifiers", [("Command bar", "⌘ K"), ("Send", "⌘ ↩"), ("Focus and reply", "⌘ ."), ("Undo", "⌘ Z"), ("Copy latest code", "⌥ ⌘ C")])
             }
             .padding(.top, 32)

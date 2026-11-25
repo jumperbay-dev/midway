@@ -1,7 +1,7 @@
 import Foundation
 import GRDB
 
-/// The search-bar syntax, shared by search, tag rules and the Screener: words and `key:value` terms,
+/// The search-bar syntax, shared by search and tag rules: words and `key:value` terms,
 /// joined by AND (or nothing), OR, NOT or a leading `-`, with brackets. Compiles to an SQL condition on `message`.
 ///
 /// Terms: from:, domain:, to: or via:, account:, list:, subject:, tag:, is:unread|read|starred|known,

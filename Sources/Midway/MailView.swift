@@ -3,7 +3,7 @@ import GRDB
 import MidwayCore
 import SwiftUI
 
-/// Which list is showing: the unified Inbox, a local pile, drafts, the Screener, a tag, one of your addresses,
+/// Which list is showing: the unified Inbox, a local pile, drafts, a tag, one of your addresses,
 /// or one account's label (Gmail labels act as folders). `tags` is the page for editing tags and rules.
 enum Box: Hashable {
     case inbox
@@ -11,7 +11,6 @@ enum Box: Hashable {
     case setAside
     case snoozed
     case drafts
-    case screener
     case tags(Int64?)
     case tag(Int64, name: String)
     case via(String, label: String)
@@ -24,7 +23,6 @@ enum Box: Hashable {
         case .setAside: "Set aside"
         case .snoozed: "Snoozed"
         case .drafts: "Drafts"
-        case .screener: "Screener"
         case .tags: "Tags"
         case .tag(_, let name): name
         case .via(_, let label): "via \(label)"
@@ -39,7 +37,7 @@ enum Box: Hashable {
         case .replyLater: return try Message.fetchAll(db, sql: "\(pileJoin) WHERE pile.replyLater ORDER BY message.date")
         case .setAside: return try Message.fetchAll(db, sql: "\(pileJoin) WHERE pile.setAside ORDER BY message.date DESC")
         case .snoozed: return try Message.fetchAll(db, sql: "\(pileJoin) WHERE pile.snoozedUntil > ? ORDER BY pile.snoozedUntil", arguments: [now])
-        case .drafts, .screener, .tags: return []
+        case .drafts, .tags: return []
         case .tag(let id, _):
             return try Message.fetchAll(db, sql: "SELECT * FROM message WHERE key IN (SELECT key FROM tag_link WHERE tagId = ?) ORDER BY date DESC", arguments: [id])
         case .inbox, .label, .via:
@@ -53,7 +51,7 @@ enum Box: Hashable {
                 SELECT message.* FROM message JOIN label ON label.messageId = message.id
                 LEFT JOIN pile ON pile.messageId = message.id
                 WHERE label.name = ? AND (? IS NULL OR message.accountId = ?) AND (? IS NULL OR message.via = ?)
-                  AND (pile.snoozedUntil IS NULL OR pile.snoozedUntil <= ?) \(account == nil ? "AND \(Store.allowed)" : "")
+                  AND (pile.snoozedUntil IS NULL OR pile.snoozedUntil <= ?)
                 ORDER BY MAX(message.date, IFNULL(pile.snoozedUntil, '')) DESC
                 """, arguments: [name, account, account, via, via, now])
         }
@@ -86,14 +84,12 @@ struct MailView: View {
     /// Tags on the listed messages, by message key; all tags for the command bar.
     @Local private var tagsByKey: [String: [Tag]] = [:]
     @Local private var allTags: [Tag] = []
-    @Local private var tagging: TagTarget?
+    @Local private var tagging: Message?
     /// Parcels on their way, by message: the carrier for the row's delivery chip.
     @Local private var deliveries: [Int64: String] = [:]
     @FocusState private var focused: Bool
     @Environment(\.openWindow) private var openWindow
 
-    /// What the tag picker tags: one message, or (from the Screener) everything from a sender, by a rule.
-    enum TagTarget { case message(Message), sender(String) }
 
     var unread: Int { messages.count { !$0.seen } }
     var current: Message? { messages.first { $0.id == selected } }
@@ -114,8 +110,6 @@ struct MailView: View {
                         SearchView(model: model, open: { m in box = .inbox; model.mode = .mail; selected = m.id }, close: { model.mode = .mail; focused = true })
                     } else if box == .drafts {
                         DraftsList(model: model)
-                    } else if box == .screener {
-                        ScreenerView(model: model, allowAndTag: { a in model.decide(a, allow: true); tagging = .sender(a) }, decided: { toast = $0 })
                     } else if case .tags(let id) = box {
                         TagsView(model: model, box: $box, selected: id)
                     } else {
@@ -123,7 +117,7 @@ struct MailView: View {
                         Rectangle().fill(T.line).frame(width: 1)
                         if let current, let store = model.store {
                             Reader(message: current, store: store, pile: piles[current.id ?? -1], snoozing: $snoozing,
-                                   act: act, setPile: pile, snooze: snooze, reply: { compose(current) }, tag: { tagging = .message(current) }, model: model)
+                                   act: act, setPile: pile, snooze: snooze, reply: { compose(current) }, tag: { tagging = current }, model: model)
                                 .id(current.id)
                         } else {
                             Text(messages.isEmpty ? (box == .inbox ? "All caught up" : "Nothing here") : "No message selected")
@@ -167,7 +161,6 @@ struct MailView: View {
         if pendingG {
             pendingG = false
             if c == "i" { box = .inbox; return .handled }
-            if c == "s" { box = .screener; return .handled }
         }
         switch c {
         case "g": pendingG = true
@@ -177,7 +170,7 @@ struct MailView: View {
         case "z": if model.undoLast != nil { undo() }
         case "r": if let current { compose(current) }
         case "h": if current != nil { snoozing = true }
-        case "t": if let current { tagging = .message(current) }
+        case "t": if let current { tagging = current }
         case "a": if let current { model.summarise(current) }
         case "e", "#", "s", "u", "l", "y":
             guard let current else { return .ignored }
@@ -237,31 +230,18 @@ struct MailView: View {
         selected = messages.indices.contains(i + 1) ? messages[i + 1].id : i > 0 ? messages[i - 1].id : nil
     }
 
-    func tagPicker(_ target: TagTarget) -> some View {
-        let (title, applied): (String, Set<Int64>) = switch target {
-        case .message(let m): ("1 message", Set((tagsByKey[m.key ?? ""] ?? []).compactMap(\.id)))
-        case .sender(let a): ("all from \(a)", [])
-        }
-        var message: Message? { if case .message(let m) = target { m } else { nil } }
-        return TagPicker(model: model, title: title, applied: applied, pick: { tag, rule in applyTag(target, tag, rule: rule) },
-                         close: { tagging = nil; focused = true }, message: message)
+    func tagPicker(_ m: Message) -> some View {
+        TagPicker(model: model, title: "1 message", applied: Set((tagsByKey[m.key ?? ""] ?? []).compactMap(\.id)),
+                  pick: { tag, rule in applyTag(m, tag, rule: rule) }, close: { tagging = nil; focused = true }, message: m)
     }
 
-    /// One message: toggles the tag, and ⌘↩ adds a from: rule. A sender: always a rule, run over their mail now.
-    func applyTag(_ target: TagTarget, _ tag: Tag, rule: Bool) {
-        guard let id = tag.id, let store = model.store else { return }
-        switch target {
-        case .message(let m):
-            guard let key = m.key else { return }
-            let on = !(tagsByKey[key] ?? []).contains { $0.id == id }
-            model.setTag(id, key, on)
-            if rule && on { _ = try? store.addRule("from:\(m.fromAddr)", tag: id); try? store.rerun(tag: id) }
-            toast = on ? "Tagged \(tag.name)\(rule ? " · rule added" : "")" : "Removed \(tag.name)"
-        case .sender(let a):
-            _ = try? store.addRule("from:\(a)", tag: id)
-            try? store.rerun(tag: id)
-            toast = "Allowed · \(tag.name) from now on"
-        }
+    /// Toggles the tag, and ⌘↩ adds a from: rule.
+    func applyTag(_ m: Message, _ tag: Tag, rule: Bool) {
+        guard let id = tag.id, let store = model.store, let key = m.key else { return }
+        let on = !(tagsByKey[key] ?? []).contains { $0.id == id }
+        model.setTag(id, key, on)
+        if rule && on { _ = try? store.addRule("from:\(m.fromAddr)", tag: id); try? store.rerun(tag: id) }
+        toast = on ? "Tagged \(tag.name)\(rule ? " · rule added" : "")" : "Removed \(tag.name)"
     }
 
     func compose(_ replyTo: Message?) {
@@ -281,7 +261,7 @@ struct MailView: View {
                 .init(group: group, title: p?.replyLater == true ? "Remove from Reply later" : "Reply later", key: "l") { pile(.replyLater, m) },
                 .init(group: group, title: p?.setAside == true ? "Remove from Set aside" : "Set aside", key: "y") { pile(.setAside, m) },
                 .init(group: group, title: "Snooze…", key: "h") { snoozing = true },
-                .init(group: group, title: "Tag…", key: "t") { tagging = .message(m) },
+                .init(group: group, title: "Tag…", key: "t") { tagging = m },
                 .init(group: group, title: "Summarise with Claude", key: "a") { model.summarise(m) },
                 .init(group: group, title: m.flagged ? "Unstar" : "Star", key: "s") { act(.flagged, m) },
                 .init(group: group, title: m.seen ? "Mark unread" : "Mark read", key: "u") { act(.seen, m) },
@@ -306,7 +286,6 @@ struct MailView: View {
             .init(group: "Go to", title: "Set aside", key: nil) { box = .setAside },
             .init(group: "Go to", title: "Snoozed", key: nil) { box = .snoozed },
             .init(group: "Go to", title: "Drafts", key: nil) { box = .drafts },
-            .init(group: "Go to", title: "Screener", key: "g s") { box = .screener },
         ]
         for t in allTags { out.append(.init(group: "Go to", title: "Tag · \(t.name)", key: nil) { box = .tag(t.id!, name: t.name) }) }
         for a in model.accounts where a.kind == .google {
@@ -605,7 +584,6 @@ struct Sidebar: View {
     @Local private var drafts = 0
     @Local private var failed = 0
     @Local private var labels: [LabelRow] = []
-    @Local private var screened = 0
     @Local private var tags: [Tag] = []
     @Local private var vias: [ViaRow] = []
 
@@ -634,7 +612,6 @@ struct Sidebar: View {
                 item(.replyLater, "Reply later", later)
                 item(.setAside, "Set aside", aside)
                 if snoozed > 0 { item(.snoozed, "Snoozed", snoozed) }
-                if screened > 0 || box == .screener { item(.screener, "Screener", screened) }
                 if drafts > 0 { item(.drafts, failed > 0 ? "Drafts · \(failed) not sent" : "Drafts", drafts) }
                 HStack {
                     Text("Tags").font(.label11).foregroundStyle(T.faint)
@@ -697,7 +674,7 @@ struct Sidebar: View {
             HStack {
                 Text(title).lineLimit(1).font(mono ? .mono12 : .body13)
                 Spacer()
-                if count > 0 { Text("\(count)").font(.meta12).foregroundStyle(b == .inbox ? T.teal : b == .replyLater || b == .screener || (b == .drafts && failed > 0) ? T.gold : T.faint) }
+                if count > 0 { Text("\(count)").font(.meta12).foregroundStyle(b == .inbox ? T.teal : b == .replyLater || (b == .drafts && failed > 0) ? T.gold : T.faint) }
             }
             .padding(.horizontal, 12).frame(height: { if case .label = b { 28 } else if case .via = b { 28 } else { 32 } }())
             .background(RoundedRectangle(cornerRadius: 4).fill(box == b ? T.sel : .clear))
@@ -712,14 +689,10 @@ struct Sidebar: View {
         let obs = ValueObservation.tracking { db in
             let inbox = try Int.fetchOne(db, sql: """
                 SELECT COUNT(*) FROM message JOIN label ON label.messageId = message.id LEFT JOIN pile ON pile.messageId = message.id
-                WHERE label.name = ? AND message.seen = 0 AND (pile.snoozedUntil IS NULL OR pile.snoozedUntil <= ?) AND \(Store.allowed)
+                WHERE label.name = ? AND message.seen = 0 AND (pile.snoozedUntil IS NULL OR pile.snoozedUntil <= ?)
                 """, arguments: [Label.inbox, now]) ?? 0
-            let screened = try Int.fetchOne(db, sql: """
-                SELECT COUNT(DISTINCT lower(message.fromAddr)) FROM message JOIN label ON label.messageId = message.id
-                WHERE label.name = ? AND \(Store.undecided)
-                """, arguments: [Label.inbox]) ?? 0
             let vias = try ViaRow.fetchAll(db, sql: """
-                SELECT message.via, account.email, SUM(message.seen = 0 AND \(Store.allowed)) AS unread
+                SELECT message.via, account.email, SUM(message.seen = 0) AS unread
                 FROM message JOIN label ON label.messageId = message.id JOIN account ON account.id = message.accountId
                 WHERE label.name = ? AND message.via IS NOT NULL AND message.via != lower(account.email)
                 GROUP BY message.via ORDER BY message.via
@@ -734,14 +707,14 @@ struct Sidebar: View {
                 """, arguments: [Label.inbox])
             let drafts = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM draft") ?? 0
             let failed = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM outbox WHERE error IS NOT NULL") ?? 0
-            return (inbox, rows, drafts, failed, counts, screened, vias, tags)
+            return (inbox, rows, drafts, failed, counts, vias, tags)
         }
         do {
-            for try await (inbox, rows, d, f, c, s, v, t) in obs.values(in: store.db) {
+            for try await (inbox, rows, d, f, c, v, t) in obs.values(in: store.db) {
                 inboxUnread = inbox; labels = rows; drafts = d; failed = f
-                screened = s; vias = v; tags = t
+                vias = v; tags = t
                 (later, aside, snoozed) = (c[0], c[1], c[2])
-                // Dock badge only in v1: unread in the Inbox; snoozed mail and the Screener not counted.
+                // Dock badge only in v1: unread in the Inbox; snoozed mail not counted.
                 NSApplication.shared.dockTile.badgeLabel = inbox > 0 ? "\(inbox)" : nil
                 model.labels = Dictionary(grouping: rows, by: { $0.accountId }).mapValues { $0.map { $0.name } }
             }

@@ -21,10 +21,6 @@ func subjects(_ store: Store, _ q: String) throws -> Set<String> {
     return Set(try store.db.read { try String.fetchAll($0, sql: "SELECT subject FROM message WHERE \(query.sql)", arguments: query.arguments) })
 }
 
-func inbox(_ store: Store) throws -> Set<String> {
-    Set(try store.db.read { try String.fetchAll($0, sql: "SELECT subject FROM message WHERE \(Store.allowed)") })
-}
-
 @Test func querySyntax() throws {
     let (store, _, dir) = try tagStore()
     defer { try? FileManager.default.removeItem(at: dir) }
@@ -38,7 +34,7 @@ func inbox(_ store: Store) throws -> Set<String> {
     #expect(try subjects(store, "-from:ada is:unread") == [rail])
     #expect(try subjects(store, "NOT (from:ada OR via:shop+)") == [tide])
     #expect(try subjects(store, "cardam") == [ada])  // words go to the full-text index, as prefixes
-    #expect(try subjects(store, "older:1d").isEmpty)
+    #expect(try subjects(store, "older:100000d").isEmpty)  // the fixture mail is from a fixed date, so only a huge window stays empty
     #expect(try subjects(store, "http://example.com").isEmpty)  // not a term, just words
     for bad in ["from:", "(from:ada", "from:ada)", "is:weird", "older:soon", "NOT", ""] {
         #expect(throws: Query.Invalid.self) { try Query(bad) }
@@ -58,43 +54,16 @@ func inbox(_ store: Store) throws -> Set<String> {
     #expect(Provenance.label(via: "me@fastmail.com", account: "me@fastmail.com") == nil)
 }
 
-@Test func screener() throws {
-    let (store, a, dir) = try tagStore()
-    defer { try? FileManager.default.removeItem(at: dir) }
-    // Everyone is new, so everything waits.
-    #expect(try inbox(store).isEmpty)
-
-    try store.decide("ADA@example.com", allow: true)
-    #expect(try inbox(store) == ["Dinner on Friday?"])
-
-    // Writing to someone lets them through; so does your own mail.
-    try store.noteSent(eml("me@fastmail.com", "hello@tidewater.example", "Unsubscribe", "please"), account: "me@fastmail.com")
-    try store.insert(raw: eml("me@fastmail.com", "ada@example.com", "Re: Dinner", "yes"), uid: 4, state: .init(seen: true, labels: [Label.inbox]), account: a, mailbox: "INBOX")
-    #expect(try inbox(store) == ["Dinner on Friday?", "Issue 48", "Re: Dinner"])
-
-    // Block archives what is there and what comes later; undo brings it back.
-    let archived = try store.decide("booking@mail.nordicrail.example", allow: false)
-    #expect(archived == [1])
-    #expect(try !labels(store, 1).contains(Label.inbox))
-    try store.undecide("booking@mail.nordicrail.example", unarchive: archived)
-    #expect(try labels(store, 1).contains(Label.inbox))
-    #expect(try store.pendingOps(account: a, mailbox: "INBOX").isEmpty)
-
-    try store.decide("booking@mail.nordicrail.example", allow: false)
-    try store.insert(raw: eml("booking@mail.nordicrail.example", "me+shop@fastmail.com", "Deals!", "x"), uid: 5, state: .init(seen: false, labels: [Label.inbox]), account: a, mailbox: "INBOX")
-    #expect(try !labels(store, 5).contains(Label.inbox))
-}
-
-@Test func rulesTagAndAllow() throws {
+@Test func rulesAndExport() throws {
     let (store, a, dir) = try tagStore()
     defer { try? FileManager.default.removeItem(at: dir) }
     let travel = try store.createTag("Travel")
     #expect(try store.createTag("travel").id == travel.id)  // names are unique, any case
-    #expect(throws: Query.Invalid.self) { try store.addRule("from:", tag: travel.id) }
+    #expect(throws: Query.Invalid.self) { try store.addRule("from:", tag: travel.id!) }
 
     // A rule tags new mail at once, and old mail when re-run. Manual tags stay.
     try store.setTag(travel.id!, on: "ada@x", true)
-    try store.addRule("via:shop+", tag: travel.id)
+    try store.addRule("via:shop+", tag: travel.id!)
     #expect(try store.pendingRerun(tag: travel.id!) == 1)
     #expect(try store.rerun(tag: travel.id!) == 1)
     #expect(try subjects(store, "tag:travel") == ["Your booking to Bergen", "Dinner on Friday?"])
@@ -103,24 +72,16 @@ func inbox(_ store: Store) throws -> Set<String> {
     #expect(try subjects(store, "tag:Travel").contains("Your stay"))
     #expect(try store.pendingRerun(tag: travel.id!) == 0)
 
-    // A rule without a tag lets matching senders past the Screener.
-    try store.addRule("list:tidewater", tag: nil)
-    try store.insert(raw: eml("hello@tidewater.example", "me@fastmail.com", "Issue 49", "x", extra: "List-Id: <weekly.tidewater.example>\r\n"),
-                     uid: 7, state: .init(seen: false, labels: [Label.inbox]), account: a, mailbox: "INBOX")
-    #expect(try inbox(store) == ["Issue 48", "Issue 49"])
-
-    // Export, then import into a fresh store: same tags, rules, links and decisions.
+    // Export, then import into a fresh store: same tags, rules and links.
     let data = try store.exportTags()
     let (other, _, otherDir) = try tempStore()
     defer { try? FileManager.default.removeItem(at: otherDir) }
     try other.importTags(data)
     try other.importTags(data)  // twice changes nothing
-    let (tags, rules, links, decision) = try other.db.read { db in
-        (try Tag.fetchAll(db).map(\.name), try TagRule.fetchCount(db), try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tag_link"),
-         try String.fetchOne(db, sql: "SELECT decision FROM screener WHERE address = 'hello@tidewater.example'"))
+    let (tags, rules, links) = try other.db.read { db in
+        (try Tag.fetchAll(db).map(\.name), try TagRule.fetchCount(db), try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tag_link"))
     }
     #expect(tags == ["Travel"])
-    #expect(rules == 2)
+    #expect(rules == 1)
     #expect(links == 3)
-    #expect(decision == "allow")
 }

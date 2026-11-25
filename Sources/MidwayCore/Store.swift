@@ -294,6 +294,7 @@ public final class Store: Sendable {
                 t.column("query", .text).notNull()
                 t.column("enabled", .boolean).notNull().defaults(to: true)
             }
+            // ponytail: the Screener is removed for now; its table and decisions stay so it can come back without a migration.
             try db.create(table: "screener") { t in
                 t.primaryKey("address", .text).collate(.nocase)
                 t.column("decision", .text).notNull()  // allow, block
@@ -396,7 +397,7 @@ public final class Store: Sendable {
             try Self.setLabels(state.labels, message: id, db)
             try Self.index(id, p, account: email, date: m.date, db)
             try Self.wakeSnoozed(answeredBy: p, thread: state.gmThrId, db)
-            try Self.screenAndTag(id, from: p.from.address, account: email, db)
+            try Self.runRules(only: [id], tag: nil, db)
             try Self.noteQuick(id, p, date: m.date, db)
         }
     }
@@ -556,8 +557,6 @@ public final class Store: Sendable {
                     lastSeen = MAX(lastSeen, excluded.lastSeen),
                     sent = sent + excluded.sent, received = received + excluded.received
                 """, arguments: [a.address, a.name, date, sentByMe ? 1 : 0, sentByMe ? 0 : 1])
-            // Writing to someone lets them past the Screener.
-            if sentByMe { try db.execute(sql: "INSERT OR IGNORE INTO screener (address, decision) VALUES (?, 'allow')", arguments: [a.address]) }
         }
     }
 

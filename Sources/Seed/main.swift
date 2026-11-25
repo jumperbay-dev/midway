@@ -43,10 +43,6 @@ let quick: [(Int64, Data)] = [
   (10, mail("Fjord Hotels <stay@fjordhotels.example>", "Your stay in Bergen, 3-5 Dec", ago(20000), plain, "Booking reference: KXPTQR\nCheck-in from 15:00.")),
 ]
 for (uid, raw) in quick { try store.insert(raw: raw, uid: uid, state: .init(seen: false, labels: [Label.inbox]), account: a.id!, mailbox: "INBOX") }
-// Everyone but Tidewater is let through, so the Screener has one sender waiting.
-for addr in ["booking@nordicrail.example", "statements@kestrel.example", "ada@example.com", "mum@example.com", "jonas@example.com",
-             "mira@example.com", "no-reply@fjordair.example", "stay@bryggen.example", "security@example.com", "orders@lumen.example",
-             "marta@ek.example", "stay@fjordhotels.example"] { try store.decide(addr, allow: true) }
 print("seeded quick access")
 
 // Calendars: two on Fastmail, one on Gmail, events around today, and an invitation that clashes.

@@ -122,6 +122,7 @@ public actor AccountSync {
                 }
                 let name = String(decoding: info.path.name.bytes, as: UTF8.self)
                 if name.lowercased() == "archive", found["\\Archive"] == nil { found["\\Archive"] = name }
+                if name.lowercased() == "trash", found["\\Trash"] == nil { found["\\Trash"] = name }
             }
         }
         return found
@@ -221,15 +222,15 @@ public actor AccountSync {
         case (.archive, true, true): .uidStore(.set(set), [], .gmailLabels(.remove(silent: true, gmailLabels: gmail([Label.inbox]))))
         case (.archive, false, true), (.trash, false, true): .uidStore(.set(set), [], .gmailLabels(.add(silent: true, gmailLabels: gmail([Label.inbox]))))
         case (.archive, true, false): { leaves = true; return .uidMove(.set(set), MailboxName(ByteBuffer(string: roles["\\Archive"] ?? "Archive"))) }()
-        case (.trash, true, _): roles["\\Trash"].map { leaves = true; return .uidMove(.set(set), MailboxName(ByteBuffer(string: $0))) }
+        case (.trash, true, _): { leaves = true; return .uidMove(.set(set), MailboxName(ByteBuffer(string: roles["\\Trash"] ?? "Trash"))) }()
         // Fastmail syncs INBOX only, so an archived or trashed message is no longer here to bring back.
         case (.archive, false, false), (.trash, false, false): nil
         }
         guard let command else { return try store.finish(op, removeMessage: false) }
-        if op.kind == .archive, op.value, !isGmail, roles["\\Archive"] == nil {
-            // No SPECIAL-USE archive (Dovecot without it, GreenMail): a folder called Archive, made once if it isn't there.
-            _ = try? await conn.send(.create(MailboxName(ByteBuffer(string: "Archive")), [])) { _, r in try await r.waitForCompletion() }
-            roles["\\Archive"] = "Archive"
+        // No SPECIAL-USE folder (Dovecot without it, GreenMail): a folder called Archive or Trash, made once if it isn't there.
+        if op.value, !isGmail, let (role, name) = [OpKind.archive: ("\\Archive", "Archive"), .trash: ("\\Trash", "Trash")][op.kind], roles[role] == nil {
+            _ = try? await conn.send(.create(MailboxName(ByteBuffer(string: name)), [])) { _, r in try await r.waitForCompletion() }
+            roles[role] = name
         }
         let tagged = try await conn.send(command) { _, r in try await r.waitForCompletion() }
         let ok = (try? tagged.checkOK()) != nil

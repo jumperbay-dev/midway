@@ -62,6 +62,14 @@ Done so far:
    Not yet: sync-collection tokens, an offline queue for calendar edits (an edit fails while offline), BYMONTHDAY and
    other rarer repeat rules, editing one occurrence of a series, free/busy lookup, tags on events, "Found in your mail".
 
+9. **Ship**: themes from the canvas in Settings ▸ Appearance (`⌘,`): Deep (Atlantis dark, the default), Pier (Atlantis
+   light) and Follow system. Sparkle 2.10.1 checks an EdDSA-signed appcast (midway ▸ Check for Updates…; off in dev
+   builds, which have no feed). `scripts/release.sh <version>` signs Sparkle's helpers and the app with your Developer
+   ID and the hardened runtime, notarizes with `notarytool`, staples, zips and writes `appcast.xml`, all on your Mac.
+
+   Not yet: the data-protection Keychain (needs a Developer ID provisioning profile), accent and density settings,
+   delta updates, a DMG.
+
 Builds with the Command Line Tools alone (no Xcode, no CI).
 
 ```sh
@@ -85,7 +93,30 @@ cp config/Google.example.xcconfig config/Google.xcconfig   # then fill in both v
 ./scripts/bundle.sh                                         # copies them into Info.plist
 ```
 
+Releases need, once: a `Developer ID Application` certificate, `xcrun notarytool store-credentials midway-notary`
+(Apple ID with an app-specific password), and `.build/artifacts/sparkle/Sparkle/bin/generate_keys` for the update key.
+Then fill in `config/Release.xcconfig` (git-ignored, from the example) and run:
+
+```sh
+scripts/release.sh 0.2.0    # build/release/midway-0.2.0.zip and appcast.xml, to upload next to the feed URL
+```
+
 For `swift run`, set `MIDWAY_GOOGLE_CLIENT_ID` and `MIDWAY_GOOGLE_CLIENT_SECRET` instead.
+
+Local test servers: GreenMail (IMAP 3143, SMTP 3025) and Radicale (CalDAV 5232) in Docker, with a throwaway account.
+Plaintext is allowed only for `localhost` and only with `MIDWAY_DEV_PLAINTEXT=1`; the password comes from
+`MIDWAY_DEV_PASSWORD` so the test account needs no Keychain item.
+
+```sh
+docker run -d --name midway-greenmail -p 3025:3025 -p 3143:3143 \
+  -e GREENMAIL_OPTS='-Dgreenmail.setup.test.smtp -Dgreenmail.setup.test.imap -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.users=me:devpass@local.test,ada:devpass@local.test -Dgreenmail.users.login=email' \
+  greenmail/standalone
+docker run -d --name midway-radicale -p 5232:5232 tomsquest/docker-radicale
+curl -u me@local.test:devpass -X MKCALENDAR http://localhost:5232/me@local.test/personal/
+mkdir -p /tmp/midway-local && sqlite3 /tmp/midway-local/midway.sqlite \
+  "insert into account(email, imapHost, imapPort, kind, ai) values('me@local.test','localhost',993,'password',0)"  # after a first launch
+open -n build/midway.app --env MIDWAY_HOME=/tmp/midway-local --env MIDWAY_DEV_PLAINTEXT=1 --env MIDWAY_DEV_PASSWORD=devpass
+```
 
 Dev store: `MIDWAY_HOME=/tmp/midway-dev swift run Seed /tmp/midway-dev` seeds sample mail, calendars and an invitation; launch with the same `MIDWAY_HOME`.
 

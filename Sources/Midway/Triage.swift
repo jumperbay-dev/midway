@@ -35,15 +35,15 @@ struct SnoozePicker: View {
                 }
                 if snoozed { option("Unsnooze now", nil, true) { pick(nil, wakeOnReply) } }
             }
+            Rectangle().fill(T.line).frame(height: 1).padding(.horizontal, -8).padding(.top, 8)
             Toggle("Bring back early if they reply", isOn: $wakeOnReply)
                 .toggleStyle(.switch).controlSize(.mini).tint(T.teal)
-                .padding(.horizontal, 12).padding(.top, 12)
-                .overlay(alignment: .top) { Rectangle().fill(T.line).frame(height: 1).padding(.horizontal, -8).padding(.top, 4) }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12).frame(height: 36).padding(.top, 4)
         }
         .font(.body13)
         .padding(8).frame(width: 336)
         .background(T.surface)
-        .preferredColorScheme(.dark)
         .onAppear { focused = true }
     }
 
@@ -100,12 +100,12 @@ struct CommandBar: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            Color(hex: 0x050A0F).opacity(0.6).onTapGesture(perform: close)
+            T.scrim.onTapGesture(perform: close)
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 12) {
                     Image(systemName: "arrow.right").foregroundStyle(T.teal)
                     TextField("Type a command, a place or words from a message", text: $text)
-                        .textFieldStyle(.plain).font(.system(size: 15)).focused($focused)
+                        .textFieldStyle(.plain).font(T.font(15)).focused($focused)
                         .onKeyPress(.downArrow) { index = min(index + 1, max(shown.count - 1, 0)); return .handled }
                         .onKeyPress(.upArrow) { index = max(index - 1, 0); return .handled }
                         .onKeyPress(.escape) { close(); return .handled }
@@ -220,9 +220,9 @@ struct KeyboardMap: View {
             ForEach(keys.map(String.init), id: \.self) { k in
                 let label = Self.bound[k]
                 VStack(alignment: .leading) {
-                    Text(k).font(.system(size: 15, weight: .semibold)).foregroundStyle(label == nil ? T.faint : T.teal)
+                    Text(k).font(T.font(15, .semibold)).foregroundStyle(label == nil ? T.faint : T.teal)
                     Spacer()
-                    Text(label ?? "").font(.system(size: 11)).foregroundStyle(label == nil ? T.faint : T.text).lineLimit(1)
+                    Text(label ?? "").font(T.font(11)).foregroundStyle(label == nil ? T.faint : T.text).lineLimit(1)
                 }
                 .padding(8).frame(width: 64, height: 56, alignment: .leading)
                 .background(RoundedRectangle(cornerRadius: 10).fill(label == nil ? T.surface : T.teal.opacity(0.10)))

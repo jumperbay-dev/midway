@@ -95,7 +95,8 @@ public struct CalDAV: Sendable {
 
     /// Where discovery starts: Fastmail and Google directly, anyone else through /.well-known/caldav.
     public static func start(for account: Account) -> URL {
-        switch account.kind {
+        if Dev.plaintext(account.imapHost) { return Dev.caldav }
+        return switch account.kind {
         case .google: URL(string: "https://apidata.googleusercontent.com/caldav/v2/\(account.email)/user")!
         case .password:
             account.imapHost.hasSuffix("fastmail.com") ? URL(string: "https://caldav.fastmail.com/dav/")!

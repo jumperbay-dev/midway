@@ -24,14 +24,15 @@ struct MidwayApp: App {
                 }
             }
             .frame(minWidth: 1000, minHeight: 600)
-            .background(T.bg)
-            .foregroundStyle(T.text)
-            .preferredColorScheme(.dark)
+            .themed(model.theme)
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1280, height: 800)
         .commands {
             TextFormattingCommands()
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") { model.updates.check() }.disabled(model.updates.controller == nil)
+            }
             CommandMenu("Go") {
                 Button("Mail") { model.mode = .mail }.keyboardShortcut("1")
                 Button("Calendar") { model.mode = .calendar }.keyboardShortcut("2")
@@ -45,11 +46,17 @@ struct MidwayApp: App {
             }
         }
 
-        Settings { AISettings(model: model) }
+        Settings {
+            TabView {
+                AppearanceSettings(model: model).tabItem { Label("Appearance", systemImage: "circle.lefthalf.filled") }
+                AISettings(model: model).tabItem { Label("AI engines", systemImage: "terminal") }
+            }
+            .themed(model.theme)
+        }
 
         // Compose opens as its own window, one per draft.
         WindowGroup("New message", id: "compose", for: Int64.self) { $draft in
-            if let draft = draft { ComposeView(model: model, draftId: draft) }
+            if let draft = draft { ComposeView(model: model, draftId: draft).themed(model.theme) }
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 720, height: 600)
@@ -83,6 +90,8 @@ final class AppModel {
     var aiTask: Task<Void, Never>?
     /// Which message a reply draft answers, for Claude: mail without a Message-ID can't be found from the draft.
     var replySource: [Int64: Int64] = [:]
+    let updates = Updates()
+    var theme = Theme(rawValue: UserDefaults.standard.string(forKey: "theme") ?? "") ?? .deep { didSet { UserDefaults.standard.set(theme.rawValue, forKey: "theme") } }
     var calSyncers: [Int64: CalendarSync] = [:]
     var calState: [Int64: CalendarSync.State] = [:]
     var calTasks: [Task<Void, Never>] = []

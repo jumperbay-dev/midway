@@ -221,6 +221,14 @@ func ok(_ props: String) -> String { "<d:propstat><d:prop>\(props)</d:prop><d:st
     try await sync.delete(resource: id)
     #expect(server["/dav/cal/me/personal/new-1.ics"] == nil)
     #expect(try store.instances(from: on(2026, 11, 28), to: on(2026, 11, 29)).isEmpty)
+
+    // Invitation UIDs carry an @; the file name keeps it, encoded once (a local Radicale stored "%40" literally).
+    e.uid = "review@local.test"
+    try await sync.save(ICal.write(e), calendar: cals[0], uid: e.uid)
+    #expect(FakeDAV.log.contains("PUT /dav/cal/me/personal/review@local.test.ics *"))
+    e.uid = "a/b"
+    try await sync.save(ICal.write(e), calendar: cals[0], uid: e.uid)
+    #expect(!FakeDAV.log.contains { $0.contains("a/b") })
 }
 
 @Test func editsKeepWhatMidwayDoesNotModel() throws {

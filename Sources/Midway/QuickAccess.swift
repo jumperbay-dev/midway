@@ -16,7 +16,7 @@ struct QuickStrip: View {
                 HStack(spacing: 12) {
                     Image(systemName: "key").foregroundStyle(T.teal)
                     Text("Code").font(.meta12).foregroundStyle(T.muted)
-                    Text(code.value).font(.system(size: 20, weight: .semibold, design: .monospaced)).textSelection(.enabled)
+                    Text(code.value).font(T.font(20, .semibold, mono: true)).textSelection(.enabled)
                     Spacer()
                     Text("hidden 15 min after it came").font(.meta12).foregroundStyle(T.faint)
                     Button("Copy") { model.copy(code.value, secret: true, notice: "Copied code") }.buttonStyle(PrimaryButton())
@@ -57,7 +57,7 @@ struct QuickStrip: View {
                 HStack(spacing: 6) {
                     Text(i.label).foregroundStyle(T.muted)
                     Text(i.value).font(.mono12)
-                    Image(systemName: "doc.on.doc").font(.system(size: 10))
+                    Image(systemName: "doc.on.doc").font(T.font(10))
                 }
             }
             .buttonStyle(OutlineButton()).help("Copy")

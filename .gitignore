@@ -3,3 +3,4 @@ build/
 .swiftpm/
 config/Google.xcconfig
 .DS_Store
+config/Release.xcconfig

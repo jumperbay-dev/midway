@@ -42,7 +42,6 @@ struct ComposeView: View {
         .font(.body13)
         .background(T.bg)
         .foregroundStyle(T.text)
-        .preferredColorScheme(.dark)
         .frame(minWidth: 560, minHeight: 420)
         .task { load() }
         .onChange(of: draft) { save() }
@@ -53,10 +52,16 @@ struct ComposeView: View {
         if let d = Binding($draft) {
             if model.accounts.count > 1 {
                 field("From") {
-                    Picker("", selection: d.accountId) {
-                        ForEach(model.accounts, id: \.id) { a in Text(a.email).tag(a.id!) }
+                    Menu {
+                        ForEach(model.accounts, id: \.id) { a in Button(a.email) { d.wrappedValue.accountId = a.id! } }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text(model.accounts.first { $0.id == d.wrappedValue.accountId }?.email ?? "").font(.mono12).foregroundStyle(T.text)
+                            Image(systemName: "chevron.down").font(T.font(9, .semibold)).foregroundStyle(T.muted)
+                        }
                     }
-                    .labelsHidden().fixedSize().font(.mono12)
+                    .menuStyle(.button).buttonStyle(.plain).fixedSize()
+                    Spacer()
                 }
             }
             field("To") {
@@ -98,7 +103,8 @@ struct ComposeView: View {
             content()
         }
         .textFieldStyle(.plain)
-        .frame(height: 40)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: 48)
         .overlay(alignment: .bottom) { Rectangle().fill(T.line).frame(height: 1) }
     }
 

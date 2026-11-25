@@ -57,7 +57,9 @@ public actor AccountSync {
     var roles: [String: String] = [:]
 
     static func configuration(_ account: Account) -> IMAPConnection.Configuration {
-        IMAPConnection.Configuration(hostname: account.imapHost, port: UInt16(account.imapPort), useTLS: true, logging: .noLogging)
+        Dev.plaintext(account.imapHost)
+            ? IMAPConnection.Configuration(hostname: account.imapHost, port: UInt16(Dev.imapPort), useTLS: false, logging: .noLogging)
+            : IMAPConnection.Configuration(hostname: account.imapHost, port: UInt16(account.imapPort), useTLS: true, logging: .noLogging)
     }
 
     func session() async throws {
@@ -118,6 +120,8 @@ public actor AccountSync {
                 for role in ["\\All", "\\Archive", "\\Trash"] where info.attributes.contains(where: { $0 == MailboxInfo.Attribute(role) }) {
                     found[role] = String(decoding: info.path.name.bytes, as: UTF8.self)
                 }
+                let name = String(decoding: info.path.name.bytes, as: UTF8.self)
+                if name.lowercased() == "archive", found["\\Archive"] == nil { found["\\Archive"] = name }
             }
         }
         return found
@@ -216,12 +220,17 @@ public actor AccountSync {
         case (.flagged, let on, _): .uidStore(.set(set), [], .flags(on ? .add(silent: true, list: [.flagged]) : .remove(silent: true, list: [.flagged])))
         case (.archive, true, true): .uidStore(.set(set), [], .gmailLabels(.remove(silent: true, gmailLabels: gmail([Label.inbox]))))
         case (.archive, false, true), (.trash, false, true): .uidStore(.set(set), [], .gmailLabels(.add(silent: true, gmailLabels: gmail([Label.inbox]))))
-        case (.archive, true, false): roles["\\Archive"].map { leaves = true; return .uidMove(.set(set), MailboxName(ByteBuffer(string: $0))) }
+        case (.archive, true, false): { leaves = true; return .uidMove(.set(set), MailboxName(ByteBuffer(string: roles["\\Archive"] ?? "Archive"))) }()
         case (.trash, true, _): roles["\\Trash"].map { leaves = true; return .uidMove(.set(set), MailboxName(ByteBuffer(string: $0))) }
         // Fastmail syncs INBOX only, so an archived or trashed message is no longer here to bring back.
         case (.archive, false, false), (.trash, false, false): nil
         }
         guard let command else { return try store.finish(op, removeMessage: false) }
+        if op.kind == .archive, op.value, !isGmail, roles["\\Archive"] == nil {
+            // No SPECIAL-USE archive (Dovecot without it, GreenMail): a folder called Archive, made once if it isn't there.
+            _ = try? await conn.send(.create(MailboxName(ByteBuffer(string: "Archive")), [])) { _, r in try await r.waitForCompletion() }
+            roles["\\Archive"] = "Archive"
+        }
         let tagged = try await conn.send(command) { _, r in try await r.waitForCompletion() }
         let ok = (try? tagged.checkOK()) != nil
         // ponytail: a refused op is dropped without rolling back the local change; add the quiet notice with the Offline screen

@@ -193,11 +193,11 @@ struct ComposeAI: View {
             if let error {
                 Text(error).foregroundStyle(T.gold).padding(.top, 12)
             } else {
-                Text(text.isEmpty ? " " : text).font(.system(size: 15)).lineSpacing(6).textSelection(.enabled)
+                Text(text.isEmpty ? " " : text).font(T.font(15)).lineSpacing(6).textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true).padding(.top, 12)
             }
             HStack(spacing: 8) {
-                Button { use() } label: { HStack(spacing: 6) { Text("Use draft"); Text("⌘⇧↩").font(.system(size: 10)) } }
+                Button { use() } label: { HStack(spacing: 6) { Text("Use draft"); Text("⌘⇧↩").font(T.font(10)) } }
                     .buttonStyle(PrimaryButton()).keyboardShortcut(.return, modifiers: [.command, .shift]).disabled(running != nil || text.isEmpty)
                 Button("Shorter") { polish(text, "make it shorter") }.buttonStyle(OutlineButton()).disabled(running != nil || text.isEmpty)
                 Button("Warmer") { polish(text, "make it warmer") }.buttonStyle(OutlineButton()).disabled(running != nil || text.isEmpty)
@@ -344,16 +344,19 @@ struct AISettings: View {
                 }
                 Text("Off means this account's mail is never sent to AI.").font(.meta12).foregroundStyle(T.faint).padding(.top, 8)
 
-                Toggle(isOn: Bindable(model).aiRedact) {
-                    VStack(alignment: .leading) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
                         Text("Redact addresses and phone numbers")
                         Text("before anything is sent").font(.meta12).foregroundStyle(T.faint)
                     }
+                    Spacer()
+                    Toggle("", isOn: Bindable(model).aiRedact).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(T.teal)
                 }
-                .toggleStyle(.switch).controlSize(.mini).tint(T.teal).padding(.top, 16)
+                .padding(.top, 16)
 
                 HStack {
                     Text("Model")
+                    Spacer()
                     TextField("sonnet", text: Bindable(model).aiModel).textFieldStyle(.roundedBorder).frame(width: 160)
                         .onSubmit { Task { await model.detectAI() } }
                 }
@@ -367,7 +370,6 @@ struct AISettings: View {
         .frame(width: 640, height: 640)
         .background(T.bg)
         .foregroundStyle(T.text)
-        .preferredColorScheme(.dark)
         .task { runs = (try? model.store?.runs()) ?? [] }
     }
 

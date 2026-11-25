@@ -1,0 +1,9 @@
+// Copy to config/Release.xcconfig (git-ignored) for scripts/release.sh.
+// DEVELOPER_ID: the signing identity, as `security find-identity -v -p codesigning` lists it.
+DEVELOPER_ID = Developer ID Application: Your Name (TEAMID1234)
+// NOTARY_PROFILE: made once with `xcrun notarytool store-credentials <name>` (an app-specific Apple ID password).
+NOTARY_PROFILE = midway-notary
+// Where appcast.xml and the zips are served; the zips sit next to the appcast.
+SPARKLE_FEED_URL = https://example.com/midway/appcast.xml
+// From `.build/artifacts/sparkle/Sparkle/bin/generate_keys` (the private key stays in your Keychain).
+SPARKLE_PUBLIC_KEY = replace-me

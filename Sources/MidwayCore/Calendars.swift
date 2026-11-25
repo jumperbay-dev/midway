@@ -226,7 +226,9 @@ public actor CalendarSync {
     public func save(_ ics: String, calendar: CalendarRow, resource: Int64? = nil, uid: String) async throws {
         let existing = try resource.flatMap { try store.resource($0) }
         let calURL = URL(string: calendar.url)!
-        let href = existing?.href ?? calURL.appending(path: "\(uid.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(.init(charactersIn: "-_."))) ?? UUID().uuidString).ics").path(percentEncoded: true)
+        // The UID names the file when it is plain; anything else gets a fresh name (CalDAV lets the client choose).
+        let plain = !uid.isEmpty && uid.unicodeScalars.allSatisfy { CharacterSet.alphanumerics.contains($0) || "-_.@".unicodeScalars.contains($0) }
+        let href = existing?.href ?? calURL.appending(path: (plain ? uid : UUID().uuidString) + ".ics").path(percentEncoded: true)
         let url = URL(string: href, relativeTo: calURL)!.absoluteURL
         do {
             _ = try await dav.put(url, ics: ics, etag: existing?.etag)

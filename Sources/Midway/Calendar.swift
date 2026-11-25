@@ -121,7 +121,7 @@ extension AppModel {
 
 extension Color {
     /// "#62C792" from a calendar server, else a tag tone by id.
-    static func calendar(_ hex: String?, _ id: Int64) -> Color {
+    @MainActor static func calendar(_ hex: String?, _ id: Int64) -> Color {
         guard let hex, hex.hasPrefix("#"), hex.count >= 7, let v = UInt32(hex.dropFirst().prefix(6), radix: 16) else { return T.tag(Int(id)) }
         return Color(hex: v)
     }
@@ -244,7 +244,7 @@ struct CalendarView: View {
             HStack {
                 Text("⇧↩ more details").font(.meta12).foregroundStyle(T.faint)
                 Spacer()
-                Button { addQuick() } label: { HStack(spacing: 6) { Text("Add"); Text("↩").font(.system(size: 10)) } }.buttonStyle(PrimaryButton()).disabled(target == nil)
+                Button { addQuick() } label: { HStack(spacing: 6) { Text("Add"); Text("↩").font(T.font(10)) } }.buttonStyle(PrimaryButton()).disabled(target == nil)
             }
             .padding(16)
         }
@@ -337,7 +337,7 @@ struct CalSidebar: View {
                 ForEach(model.accounts, id: \.id) { a in
                     let mine = calendars.filter { $0.accountId == a.id }
                     if !mine.isEmpty {
-                        Text(a.email).font(.system(size: 11, design: .monospaced)).foregroundStyle(T.faint).padding(.horizontal, 12).padding(.top, 4)
+                        Text(a.email).font(T.font(11, mono: true)).foregroundStyle(T.faint).padding(.horizontal, 12).padding(.top, 4)
                         ForEach(mine) { c in
                             Button { try? model.store?.setVisible(c.id!, !c.visible) } label: {
                                 HStack(spacing: 8) {
@@ -346,7 +346,7 @@ struct CalSidebar: View {
                                         .frame(width: 12, height: 12)
                                     Text(c.name).lineLimit(1).foregroundStyle(c.visible ? T.text : T.faint)
                                     Spacer()
-                                    Image(systemName: c.visible ? "eye" : "eye.slash").font(.system(size: 10)).foregroundStyle(T.faint)
+                                    Image(systemName: c.visible ? "eye" : "eye.slash").font(T.font(10)).foregroundStyle(T.faint)
                                 }
                                 .padding(.horizontal, 12).frame(height: 28).contentShape(Rectangle())
                             }
@@ -370,7 +370,7 @@ struct CalSidebar: View {
         let last = states.compactMap { if case .synced(let d) = $0 { d } else { nil } }.max()
         return HStack(spacing: 8) {
             Circle().fill(failed != nil ? T.gold : T.teal).frame(width: 8, height: 8)
-            Text(failed.map { "Calendar sync: \($0)" } ?? (model.calSyncers.isEmpty ? "Sign in again to sync calendars" : nil) ?? last.map { "Synced \($0.formatted(date: .omitted, time: .shortened)) · \(calendars.count) calendars" } ?? "Syncing calendars…")
+            Text(failed.map { "Calendar sync: \($0)" } ?? (model.calSyncers.isEmpty ? "Sign in again to sync calendars" : nil) ?? last.map { "Synced \($0.formatted(date: .omitted, time: .shortened)) · \(calendars.count) calendar\(calendars.count == 1 ? "" : "s")" } ?? "Syncing calendars…")
                 .lineLimit(2)
         }
         .font(.meta12).foregroundStyle(T.muted).padding(12).help(failed ?? "")
@@ -391,7 +391,7 @@ struct CalSidebar: View {
             }
             .padding(.horizontal, 4).frame(height: 28)
             HStack(spacing: 0) { ForEach(0..<7, id: \.self) { Text(order[$0]).frame(maxWidth: .infinity) } }
-                .font(.system(size: 11)).foregroundStyle(T.faint).padding(.vertical, 4)
+                .font(T.font(11)).foregroundStyle(T.faint).padding(.vertical, 4)
             ForEach(0..<6, id: \.self) { w in
                 let week = cal.date(byAdding: .weekOfYear, value: w, to: start)!
                 let focused = cal.isDate(week, equalTo: model.calFocus, toGranularity: .weekOfYear)
@@ -400,7 +400,7 @@ struct CalSidebar: View {
                         let day = cal.date(byAdding: .day, value: d, to: week)!
                         let inMonth = cal.isDate(day, equalTo: month, toGranularity: .month)
                         Button { model.calFocus = day } label: {
-                            Text("\(cal.component(.day, from: day))").font(.system(size: 11, weight: cal.isDateInToday(day) ? .semibold : .regular))
+                            Text("\(cal.component(.day, from: day))").font(T.font(11, cal.isDateInToday(day) ? .semibold : .regular))
                                 .foregroundStyle(cal.isDateInToday(day) ? T.bg : inMonth ? T.text : T.faint.opacity(0.6))
                                 .frame(width: 20, height: 20)
                                 .background(Circle().fill(cal.isDateInToday(day) ? T.teal : .clear))
@@ -453,7 +453,7 @@ struct WeekGrid: View {
                     let today = cal.isDateInToday(d)
                     VStack(alignment: .leading, spacing: 0) {
                         Text(d.formatted(.dateTime.weekday())).font(.meta12)
-                        Text("\(cal.component(.day, from: d))").font(.system(size: 20, weight: .semibold))
+                        Text("\(cal.component(.day, from: d))").font(T.font(20, .semibold))
                     }
                     .foregroundStyle(today ? T.teal : T.muted)
                     .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 8)
@@ -462,7 +462,7 @@ struct WeekGrid: View {
                 }
             }
             HStack(alignment: .top, spacing: 0) {
-                Text("all-day").font(.system(size: 11)).foregroundStyle(T.faint).frame(width: 48, alignment: .trailing).padding(.trailing, 8).padding(.top, 8)
+                Text("all-day").font(T.font(11)).foregroundStyle(T.faint).frame(width: 48, alignment: .trailing).padding(.trailing, 8).padding(.top, 8)
                 ForEach(days, id: \.self) { d in
                     VStack(spacing: 2) {
                         ForEach(instances.filter { $0.allDay && $0.start < cal.date(byAdding: .day, value: 1, to: d)! && $0.end > d }, id: \.self) { i in
@@ -480,14 +480,14 @@ struct WeekGrid: View {
                     HStack(alignment: .top, spacing: 0) {
                         VStack(spacing: 0) {
                             ForEach(0..<24, id: \.self) { h in
-                                Text(String(format: "%02d", h)).font(.system(size: 11)).foregroundStyle(T.faint)
+                                Text(String(format: "%02d", h)).font(T.font(11)).foregroundStyle(T.faint)
                                     .frame(width: 48, height: hour, alignment: .topTrailing).padding(.trailing, 8).offset(y: -7).id(h)
                             }
                         }
                         ForEach(days, id: \.self) { d in column(d) }
                     }
-                    .padding(.top, 8)
                 }
+                .contentMargins(.top, 12, for: .scrollContent)
                 .onAppear { proxy.scrollTo(7, anchor: .top) }
             }
         }
@@ -548,7 +548,7 @@ struct WeekGrid: View {
             Text(i.title).fontWeight(.semibold).lineLimit(2)
             Text(i.start.formatted(date: .omitted, time: .shortened) + (i.location.isEmpty ? "" : " · \(i.location)")).foregroundStyle(T.muted).lineLimit(1)
         }
-        .font(.system(size: 11))
+        .font(T.font(11))
         .padding(.horizontal, 8).padding(.vertical, 4)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 6).fill(c.opacity(0.17)))
@@ -558,7 +558,7 @@ struct WeekGrid: View {
 
     func chip(_ i: Instance) -> some View {
         let c = Color.calendar(i.colour, i.calendarId)
-        return Text(i.title).font(.system(size: 11)).lineLimit(1)
+        return Text(i.title).font(T.font(11)).lineLimit(1)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 6).fill(c.opacity(0.17)).padding(.horizontal, -8))
     }
@@ -599,7 +599,7 @@ struct MonthGrid: View {
         let out = cal.component(.month, from: d) != month
         return VStack(alignment: .leading, spacing: 4) {
             Button { day(d) } label: {
-                Text("\(cal.component(.day, from: d))").font(.system(size: 13, weight: .semibold))
+                Text("\(cal.component(.day, from: d))").font(T.font(13, .semibold))
                     .foregroundStyle(cal.isDateInToday(d) ? T.teal : out ? T.faint.opacity(0.6) : T.muted)
             }
             .buttonStyle(.plain)
@@ -610,16 +610,16 @@ struct MonthGrid: View {
                         if !i.allDay { Text(i.start.formatted(date: .omitted, time: .shortened)).foregroundStyle(T.faint) }
                         Text(i.title).lineLimit(1)
                     }
-                    .font(.system(size: 11)).contentShape(Rectangle())
+                    .font(T.font(11)).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
-            if items.count > 3 { Text("+\(items.count - 3) more").font(.system(size: 11)).foregroundStyle(T.faint) }
+            if items.count > 3 { Text("+\(items.count - 3) more").font(T.font(11)).foregroundStyle(T.faint) }
             Spacer(minLength: 0)
         }
         .padding(8)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(cal.isDateInToday(d) ? T.sel : out ? Color.black.opacity(0.15) : .clear)
+        .background(cal.isDateInToday(d) ? T.sel : out ? T.sel.opacity(0.4) : .clear)
         .overlay(alignment: .trailing) { Rectangle().fill(T.line).frame(width: 1) }
         .overlay(alignment: .bottom) { Rectangle().fill(T.line).frame(height: 1) }
     }
@@ -721,6 +721,7 @@ struct EventEditor: View {
                     }
                     .buttonStyle(.plain)
                 }
+                .alignmentGuide(.firstTextBaseline) { _ in 16 }  // FlowRow has no text baseline; match the 24 pt chip's text
             }
             field("Where") { TextField("", text: $d.location).textFieldStyle(.plain) }
             field("Guests") {
@@ -745,7 +746,7 @@ struct EventEditor: View {
                 Spacer()
                 Button("Save and invite") { run { try await model.save(d, invite: true) } }.buttonStyle(OutlineButton())
                     .disabled(busy || MIME.addresses(d.guests).isEmpty || d.calendarId == nil)
-                Button { run { try await model.save(d, invite: false) } } label: { HStack(spacing: 6) { Text(busy ? "Saving…" : "Save"); Text("⌘S").font(.system(size: 10)) } }
+                Button { run { try await model.save(d, invite: false) } } label: { HStack(spacing: 6) { Text(busy ? "Saving…" : "Save"); Text("⌘S").font(T.font(10)) } }
                     .buttonStyle(PrimaryButton()).keyboardShortcut("s").disabled(busy || d.calendarId == nil || d.title.isEmpty)
             }
         }
@@ -766,6 +767,7 @@ struct EventEditor: View {
             Text(k).font(.meta12).foregroundStyle(T.faint).frame(width: 78, alignment: .leading)
             content()
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 12)
         .overlay(alignment: .bottom) { Rectangle().fill(T.line).frame(height: 1) }
     }
@@ -821,7 +823,7 @@ struct InviteCard: View {
                 VStack(spacing: 0) {
                     Text(event.start.formatted(.dateTime.month(.abbreviated)).uppercased()).font(.label11).foregroundStyle(T.gold)
                     Text("\(cal.component(.day, from: event.start))").font(.display)
-                    Text(event.start.formatted(.dateTime.weekday())).font(.system(size: 11)).foregroundStyle(T.faint)
+                    Text(event.start.formatted(.dateTime.weekday())).font(T.font(11)).foregroundStyle(T.faint)
                 }
                 .frame(width: 64).padding(.vertical, 8)
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(T.gold.opacity(0.5)))
@@ -830,7 +832,7 @@ struct InviteCard: View {
                     Text((event.allDay ? "All day" : "\(event.start.formatted(date: .omitted, time: .shortened))–\(event.end.formatted(date: .omitted, time: .shortened))")
                          + (event.location.isEmpty ? "" : " · \(event.location)")).foregroundStyle(T.muted)
                     let accepted = event.attendees.filter { $0.partstat == "ACCEPTED" }.count
-                    Text("Organiser \(event.organizer ?? "unknown") · \(event.attendees.count) guests, \(accepted) accepted").font(.meta12).foregroundStyle(T.faint)
+                    Text("Organiser \(event.organizer ?? "unknown") · \(event.attendees.count) guest\(event.attendees.count == 1 ? "" : "s"), \(accepted) accepted").font(.meta12).foregroundStyle(T.faint)
                 }
                 Spacer()
             }

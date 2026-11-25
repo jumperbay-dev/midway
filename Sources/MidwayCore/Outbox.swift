@@ -241,7 +241,8 @@ public actor Outbox {
             let (account, credentials) = try await login(item.accountId)
             let l = try await credentials.login()
             do {
-                try await SMTP.send(host: account.smtpHost, login: l, from: account.email,
+                let dev = Dev.plaintext(account.smtpHost)
+                try await SMTP.send(host: account.smtpHost, port: UInt16(dev ? Dev.smtpPort : 465), tls: !dev, login: l, from: account.email,
                                    to: item.recipients.split(separator: "\n").map(String.init), message: item.raw)
             } catch let f as SMTP.Failure where f.isAuth {
                 await credentials.invalidate()

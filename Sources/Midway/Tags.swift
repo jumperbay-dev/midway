@@ -11,7 +11,7 @@ struct TagChip: View {
             Circle().fill(T.tag(tag.colour)).frame(width: 6, height: 6)
             Text(tag.name)
         }
-        .font(.system(size: 11)).foregroundStyle(T.muted)
+        .font(T.font(11)).foregroundStyle(T.muted)
         .padding(.horizontal, 8).frame(height: 18)
         .background(RoundedRectangle(cornerRadius: 4).fill(T.line.opacity(0.6)))
     }
@@ -21,7 +21,7 @@ struct TagChip: View {
 struct ViaChip: View {
     let label: String
     var body: some View {
-        Text("via \(label)").font(.system(size: 11, design: .monospaced)).foregroundStyle(T.muted)
+        Text("via \(label)").font(T.font(11, mono: true)).foregroundStyle(T.muted)
             .padding(.horizontal, 8).frame(height: 18)
             .overlay(RoundedRectangle(cornerRadius: 4).stroke(T.line))
     }
@@ -62,11 +62,11 @@ struct TagPicker: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            Color(hex: 0x050A0F).opacity(0.6).onTapGesture(perform: close)
+            T.scrim.onTapGesture(perform: close)
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 12) {
                     Image(systemName: "tag").foregroundStyle(T.teal)
-                    TextField("Tag…", text: $text).textFieldStyle(.plain).font(.system(size: 15)).focused($focused)
+                    TextField("Tag…", text: $text).textFieldStyle(.plain).font(T.font(15)).focused($focused)
                         .onKeyPress(.downArrow) { index = min(index + 1, max(items.count - 1, 0)); return .handled }
                         .onKeyPress(.upArrow) { index = max(index - 1, 0); return .handled }
                         .onKeyPress(.escape) { close(); return .handled }
@@ -98,7 +98,7 @@ struct TagPicker: View {
                                     Circle().fill(T.tag(t.colour)).frame(width: 8, height: 8)
                                     Text(t.name)
                                     Spacer()
-                                    if applied.contains(t.id ?? -1) { Image(systemName: "checkmark").font(.system(size: 11)).foregroundStyle(T.teal) }
+                                    if applied.contains(t.id ?? -1) { Image(systemName: "checkmark").font(T.font(11)).foregroundStyle(T.teal) }
                                     Text("\(counts[t.id ?? -1] ?? 0)").font(.meta12).foregroundStyle(T.faint)
                                 case .create(let name):
                                     Text("+").foregroundStyle(T.teal).frame(width: 8)
@@ -223,7 +223,7 @@ struct ScreenerView: View {
     func row(_ s: Sender) -> some View {
         HStack(alignment: .top, spacing: 16) {
             Text(String((s.name.isEmpty ? s.address : s.name).prefix(1)).uppercased())
-                .font(.system(size: 13, weight: .semibold)).foregroundStyle(T.muted)
+                .font(T.font(13, .semibold)).foregroundStyle(T.muted)
                 .frame(width: 32, height: 32).background(Circle().fill(T.sel)).overlay(Circle().stroke(T.line))
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
@@ -253,7 +253,7 @@ struct ScreenerView: View {
                 HStack(spacing: 12) {
                     Text(r.query).font(.mono12)
                     Spacer()
-                    Button { try? model.store?.deleteRule(r.id!) } label: { Image(systemName: "xmark").font(.system(size: 10)) }
+                    Button { try? model.store?.deleteRule(r.id!) } label: { Image(systemName: "xmark").font(T.font(10)) }
                         .buttonStyle(GhostButton()).help("Remove")
                 }
             }
@@ -380,7 +380,7 @@ struct TagsView: View {
                 }
                 .padding(.horizontal, 8).frame(height: 56)
                 HStack(spacing: 8) {
-                    Image(systemName: "lock").font(.system(size: 10))
+                    Image(systemName: "lock").font(T.font(10))
                     Text("Stored on this Mac only. Never sent to a server.")
                 }
                 .font(.meta12).foregroundStyle(T.faint).padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 8)
@@ -460,7 +460,7 @@ struct TagsView: View {
                         Text("\(matches[r.id!] ?? 0) matches").font(.meta12).foregroundStyle(T.faint)
                         Toggle("", isOn: Binding(get: { r.enabled }, set: { try? model.store?.setRule(r.id!, enabled: $0) }))
                             .toggleStyle(.switch).controlSize(.mini).labelsHidden().tint(T.teal)
-                        Button { try? model.store?.deleteRule(r.id!) } label: { Image(systemName: "xmark").font(.system(size: 10)) }
+                        Button { try? model.store?.deleteRule(r.id!) } label: { Image(systemName: "xmark").font(T.font(10)) }
                             .buttonStyle(GhostButton()).help("Remove rule")
                     }
                     .padding(.horizontal, 16).frame(height: 44)

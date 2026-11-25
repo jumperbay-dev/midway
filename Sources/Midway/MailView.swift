@@ -153,7 +153,7 @@ struct MailView: View {
         .task(id: [box, now] as [AnyHashable]) { await observe() }
         .task(id: piles) { await tick() }
         .sheet(isPresented: Bindable(model).adding) {
-            AddAccount(model: model, back: { model.adding = false }).padding(.bottom, 48).background(T.bg)
+            AddAccount(model: model, back: { model.adding = false }).background(T.bg)
         }
     }
 
@@ -542,7 +542,7 @@ struct Row: View {
                     .foregroundStyle(message.seen ? T.muted : T.text)
                     .lineLimit(1)
                 Spacer()
-                if message.flagged { Image(systemName: "star.fill").font(.system(size: 10)).foregroundStyle(T.gold) }
+                if message.flagged { Image(systemName: "star.fill").font(T.font(10)).foregroundStyle(T.gold) }
                 Text(Row.time(message.date)).font(.meta12).foregroundStyle(T.faint)
             }
             Text(message.subject.isEmpty ? "(no subject)" : message.subject).lineLimit(1)
@@ -558,7 +558,7 @@ struct Row: View {
                         }
                     }
                     if let delivery {
-                        Label(delivery, systemImage: "shippingbox").font(.system(size: 11)).foregroundStyle(T.teal)
+                        Label(delivery, systemImage: "shippingbox").font(T.font(11)).foregroundStyle(T.teal)
                             .padding(.horizontal, 8).frame(height: 18).background(RoundedRectangle(cornerRadius: 4).fill(T.teal.opacity(0.1)))
                     }
                     ForEach(tags) { TagChip(tag: $0) }
@@ -579,7 +579,7 @@ struct Row: View {
     }
 
     func chip(_ text: String, _ color: Color) -> some View {
-        Text(text).font(.system(size: 11)).foregroundStyle(color)
+        Text(text).font(T.font(11)).foregroundStyle(color)
             .padding(.horizontal, 8).frame(height: 18)
             .background(Capsule().fill(color.opacity(0.12)))
     }
@@ -691,6 +691,7 @@ struct Sidebar: View {
         .task(id: now) { await observe() }
     }
 
+    /// Mailboxes are 32 high, tag-like rows (labels, Via) 28, as in the design.
     func item(_ b: Box, _ title: String, _ count: Int, mono: Bool = false) -> some View {
         Button { box = b } label: {
             HStack {
@@ -698,7 +699,7 @@ struct Sidebar: View {
                 Spacer()
                 if count > 0 { Text("\(count)").font(.meta12).foregroundStyle(b == .inbox ? T.teal : b == .replyLater || b == .screener || (b == .drafts && failed > 0) ? T.gold : T.faint) }
             }
-            .padding(.horizontal, 12).frame(height: b == .inbox ? 32 : 28)
+            .padding(.horizontal, 12).frame(height: { if case .label = b { 28 } else if case .via = b { 28 } else { 32 } }())
             .background(RoundedRectangle(cornerRadius: 4).fill(box == b ? T.sel : .clear))
             .contentShape(Rectangle())
         }
@@ -813,7 +814,7 @@ struct Reader: View {
             .padding(.top, -12).padding(.trailing, -16).padding(.bottom, 16)
             Text(message.subject.isEmpty ? "(no subject)" : message.subject).font(.h2).textSelection(.enabled)
             HStack(spacing: 12) {
-                Text(initials).font(.system(size: 13, weight: .semibold)).foregroundStyle(T.teal)
+                Text(initials).font(T.font(13, .semibold)).foregroundStyle(T.teal)
                     .frame(width: 36, height: 36)
                     .background(Circle().fill(T.sel)).overlay(Circle().stroke(T.line))
                 VStack(alignment: .leading, spacing: 0) {
@@ -857,7 +858,7 @@ struct Reader: View {
 
     func tool(_ icon: String, _ help: String, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: icon).font(.system(size: 14)).foregroundStyle(icon == "star.fill" || icon.hasSuffix("circle.fill") ? T.gold : icon.hasSuffix(".fill") ? T.text : T.muted)
+            Image(systemName: icon).font(T.font(14)).foregroundStyle(icon == "star.fill" || icon.hasSuffix("circle.fill") ? T.gold : icon.hasSuffix(".fill") ? T.text : T.muted)
                 .frame(width: 32, height: 32).contentShape(Rectangle())
         }
         .buttonStyle(.plain).help(help).accessibilityLabel(help)
@@ -879,7 +880,7 @@ struct Reader: View {
     }
 
     static func page(_ body: String) -> String {
-        "<style>:root{color-scheme:dark}html{background:transparent}body{margin:0;max-width:640px;color:#C3D3DA;font:15px/24px -apple-system,sans-serif}</style>" + body
+        "<style>:root{color-scheme:\(T.p.dark ? "dark" : "light")}html{background:transparent}body{margin:0;max-width:640px;color:#\(String(format: "%06X", T.p.body));font:15px/24px -apple-system,sans-serif}</style>" + body
     }
 }
 
@@ -901,7 +902,7 @@ struct SearchView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 12) {
                 Image(systemName: "magnifyingglass").foregroundStyle(T.teal)
-                TextField("Search mail", text: $text).textFieldStyle(.plain).font(.system(size: 15)).focused($focused)
+                TextField("Search mail", text: $text).textFieldStyle(.plain).font(T.font(15)).focused($focused)
                     .onSubmit { Task { await askServer() } }
                     .onKeyPress(.escape) { close(); return .handled }
                 if let problem {

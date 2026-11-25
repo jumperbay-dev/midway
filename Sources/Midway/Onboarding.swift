@@ -42,7 +42,7 @@ struct AddAccount: View {
                 Text("Connect your mail").font(.h2)
                 field("Email address") {
                     TextField("", text: $email, prompt: Text("you@fastmail.com").foregroundStyle(T.faint))
-                        .font(.system(size: 13, design: .monospaced))
+                        .font(T.font(13, mono: true))
                         .onChange(of: email) { host = AppModel.imapHost(for: email) }
                 }
                 if isGmail {
@@ -51,7 +51,7 @@ struct AddAccount: View {
                     if isFastmail {
                         provider("F", 0x6AB2EC, "Fastmail detected", "Use an app password from Fastmail → Settings → Privacy & Security. It is kept in your Keychain.")
                     } else {
-                        field("IMAP server") { TextField("", text: $host).font(.system(size: 13, design: .monospaced)) }
+                        field("IMAP server") { TextField("", text: $host).font(T.font(13, mono: true)) }
                     }
                     field("App password") { SecureField("", text: $password) }
                 }
@@ -99,7 +99,7 @@ struct AddAccount: View {
         }
         .textFieldStyle(.plain)
         .frame(width: 620)
-        .padding(.top, 64)
+        .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
@@ -131,7 +131,7 @@ struct AddAccount: View {
     }
 
     func badge(_ letter: String, _ color: UInt32) -> some View {
-        Text(letter).font(.system(size: 13, weight: .semibold)).foregroundStyle(Color(hex: color))
+        Text(letter).font(T.font(13, .semibold)).foregroundStyle(Color(hex: color))
             .frame(width: 32, height: 32).background(RoundedRectangle(cornerRadius: 9).fill(Color(hex: color).opacity(0.15)))
     }
 

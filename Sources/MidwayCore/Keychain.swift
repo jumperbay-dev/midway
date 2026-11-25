@@ -6,7 +6,8 @@ public enum Keychain {
     static let service = "dev.midway.account"
 
     // ponytail: login keychain. The design's data-protection keychain (kSecUseDataProtectionKeychain) needs a
-    // keychain-access-groups entitlement and a Developer ID profile; switch when signing lands (Ship milestone).
+    // keychain-access-groups entitlement and a Developer ID provisioning profile embedded in the app; switch when
+    // the profile exists (developer.apple.com), and move existing items over on first launch.
     static func query(_ account: String) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
          kSecAttrService as String: service,

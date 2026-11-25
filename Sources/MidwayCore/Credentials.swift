@@ -19,7 +19,7 @@ public actor Credentials {
     var cached: (token: String, expires: Date)?
 
     public init?(account: Account) {
-        guard let secret = Keychain.get(account.email) else { return nil }
+        guard let secret = Dev.password(account.imapHost) ?? Keychain.get(account.email) else { return nil }
         switch account.kind {
         case .password: source = .password(secret)
         case .google:

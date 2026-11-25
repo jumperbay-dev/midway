@@ -8,6 +8,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift", exact: "7.12.0"),
         .package(url: "https://github.com/apple/swift-nio-imap", exact: "0.5.0"),
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1"),
     ],
     targets: [
         .target(
@@ -17,7 +18,7 @@ let package = Package(
                 .product(name: "IMAPCommands", package: "swift-nio-imap"),
             ]
         ),
-        .executableTarget(name: "Midway", dependencies: ["MidwayCore"]),
+        .executableTarget(name: "Midway", dependencies: ["MidwayCore", .product(name: "Sparkle", package: "Sparkle")]),
         .testTarget(name: "MidwayCoreTests", dependencies: ["MidwayCore"]),
     ]
 )

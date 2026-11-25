@@ -74,7 +74,7 @@ Builds with the Command Line Tools alone (no Xcode, no CI).
 
 ```sh
 swift build                 # debug build
-./scripts/bundle.sh         # build/midway.app, ad-hoc signed, hardened runtime
+./scripts/bundle.sh         # build/midway.app, ad-hoc signed (hardened runtime only in release.sh)
 open build/midway.app
 ```
 

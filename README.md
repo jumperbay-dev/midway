@@ -4,7 +4,7 @@ Native macOS mail client in Swift, built from the *midway screens* canvas (Atlan
 Done so far:
 
 1. **Reader (Fastmail)**: app-password sign-in, Keychain, GRDB store with content-addressed `.eml` blobs,
-   INBOX sync (newest 200) with IDLE, sidebar + list + sandboxed HTML reader.
+   INBOX sync with IDLE (newest 200 first, then older mail in paced batches of 250, at most 1 GB a day per account), sidebar + list + sandboxed HTML reader.
 2. **Gmail**: Google sign-in in the browser (OAuth with PKCE, loopback redirect), IMAP `XOAUTH2`,
    All Mail sync with `X-GM-MSGID`/`X-GM-THRID`/`X-GM-LABELS`, labels as sidebar folders, one unified Inbox.
 3. **Daily driver**: offline queue (archive `e`, delete `#`, star `s`, read/unread `u`, undo `⌘Z`), deletions found by UID check,
@@ -13,7 +13,7 @@ Done so far:
    built from received and sent mail.
 
    Not yet: Drafts saved to the server's Drafts folder, Fastmail Archive/Trash views (only INBOX syncs there),
-   backfill beyond the newest 200, lists/quotes/images in the composer.
+   flag changes made elsewhere to mail older than the newest 200, lists/quotes/images in the composer.
 4. **Triage**: local piles: Reply later (`l`), Set aside (`y`), snooze (`h`) with presets or typed times
    ("fri 9am", "in 3 days"), brought back early when someone replies. Focus and reply (`⌘.`) works through Reply later
    with reply-all drafts and Send and next (`⌘↩`). Command bar (`⌘K`), keyboard map (`?`), `g i` for the Inbox, and a

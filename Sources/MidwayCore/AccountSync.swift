@@ -17,8 +17,15 @@ public actor AccountSync {
     let credentials: Credentials
     let store: Store
     let onState: @Sendable (SyncState) -> Void
-    /// ponytail: newest 200 messages only; backfill in batches of 500 comes with the Daily driver milestone.
+    /// Flags are kept current for the newest 200; older mail comes in by backfill.
+    // ponytail: flag changes made elsewhere to mail older than the window are not picked up; widen with CONDSTORE
     let window = 200
+    /// Older mail: 250 messages per cycle, half a second between round trips, at most 1 GB a day per account.
+    /// Gmail stops IMAP for a day after about 2.5 GB downloaded; Fastmail does not publish its limits.
+    // ponytail: one cap for every provider; per-provider caps if one turns out stricter
+    let backfillBatch = 250, dailyBytes = 1_000_000_000
+    /// After a refused fetch (Gmail's [THROTTLED], [OVERQUOTA]) backfill waits an hour.
+    var backfillPausedUntil = Date.distantPast
     let (wakes, waker) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
     var isGmail: Bool { account.kind == .google }
 
@@ -76,9 +83,11 @@ public actor AccountSync {
             roles = try await Self.specialUse(conn)
             guard let mailbox = isGmail ? roles["\\All"] : "INBOX" else { throw NoAllMail() }
             while !Task.isCancelled {
-                try await syncOnce(conn, mailbox: mailbox)
+                let have = try await syncOnce(conn, mailbox: mailbox)
                 onState(.synced(.now))
-                try await idle(conn)
+                // While older mail is missing, IDLE only briefly so the next batch follows; new mail still wakes it.
+                let more = try await backfill(conn, mailbox: mailbox, have: have)
+                try await idle(conn, for: more ? 2 : 25 * 60)
             }
         }
     }
@@ -128,7 +137,8 @@ public actor AccountSync {
         return found
     }
 
-    func syncOnce(_ conn: IMAPConnection, mailbox: String) async throws {
+    /// Returns the UIDs held after this sync.
+    func syncOnce(_ conn: IMAPConnection, mailbox: String) async throws -> Set<Int64> {
         let accountId = account.id!
         let name = MailboxName(ByteBuffer(string: mailbox))
         var exists = 0
@@ -151,7 +161,7 @@ public actor AccountSync {
         for op in try store.pendingOps(account: accountId, mailbox: mailbox) {
             try await replay(op, conn)
         }
-        guard exists > 0 else { return }
+        guard exists > 0 else { return known }
 
         // UID, flags (and Gmail ids and labels) for the window, by sequence number.
         let lo = SequenceNumber(rawValue: UInt32(max(1, exists - window + 1)))
@@ -177,26 +187,49 @@ public actor AccountSync {
 
         // Bodies for new UIDs, newest first.
         try await fetchBodies(conn, states.keys.filter { !known.contains($0) }, mailbox: mailbox)
+        return known.union(states.keys)
     }
 
-    /// Downloads and stores whole messages, 25 per round trip.
-    func fetchBodies(_ conn: IMAPConnection, _ uids: [Int64], mailbox: String) async throws {
+    /// One batch of older mail, newest first. True while more is missing and allowed today.
+    func backfill(_ conn: IMAPConnection, mailbox: String, have: Set<Int64>) async throws -> Bool {
+        let key = "backfill.\(account.id!).\(Date.now.formatted(.iso8601.year().month().day()))"
+        guard Date.now >= backfillPausedUntil, UserDefaults.standard.integer(forKey: key) < dailyBytes else { return false }
+        let missing = try await Self.searchUIDs(conn, .all).filter { !have.contains($0) }.sorted(by: >)
+        guard !missing.isEmpty else { return false }
+        let ok = try await fetchBodies(conn, Array(missing.prefix(backfillBatch)), mailbox: mailbox) { bytes in
+            UserDefaults.standard.set(UserDefaults.standard.integer(forKey: key) + bytes, forKey: key)
+            try await Task.sleep(for: .milliseconds(500))
+            return UserDefaults.standard.integer(forKey: key) < self.dailyBytes
+        }
+        if !ok { backfillPausedUntil = .now.addingTimeInterval(3600) }
+        return ok && missing.count > backfillBatch
+    }
+
+    /// Downloads and stores whole messages, 25 per round trip. `paced` runs after each round trip with the bytes
+    /// it brought and says whether to go on. False when the server refused a fetch.
+    @discardableResult
+    func fetchBodies(_ conn: IMAPConnection, _ uids: [Int64], mailbox: String, paced: ((Int) async throws -> Bool)? = nil) async throws -> Bool {
         let accountId = account.id!
         let missing = uids.sorted(by: >)
         for chunk in stride(from: 0, to: missing.count, by: 25).map({ Array(missing[$0..<min($0 + 25, missing.count)]) }) {
             guard let set = uidSet(chunk) else { continue }
-            _ = try await conn.send(.uidFetch(.set(set), attributes + [.bodySection(peek: true, .complete, nil)], [])) { _, responses in
+            var bytes = 0
+            let tagged = try await conn.send(.uidFetch(.set(set), attributes + [.bodySection(peek: true, .complete, nil)], [])) { _, responses in
                 var current = Fetched()
-                _ = try await responses.forEach { r in
+                return try await responses.forEach { r in
                     guard case .fetch(let f) = r else { return }
                     if case .start = f { current = Fetched() }
                     current.apply(f)
                     if case .finish = f, let uid = current.uid, !current.body.isEmpty {
+                        bytes += current.body.count
                         try store.insert(raw: current.body, uid: uid, state: current.state(isGmail: isGmail), account: accountId, mailbox: mailbox)
                     }
                 }
             }
+            guard (try? tagged.checkOK()) != nil else { return false }
+            if let paced, try await !paced(bytes) { return true }
         }
+        return true
     }
 
     static func searchUIDs(_ conn: IMAPConnection, _ key: SearchKey) async throws -> [Int64] {
@@ -270,12 +303,12 @@ public actor AccountSync {
         }
     }
 
-    /// Returns on new mail, a local change, or after 25 minutes (RFC 2177 asks to re-IDLE within 29).
+    /// Returns on new mail, a local change, or after `seconds` (25 minutes by default: RFC 2177 asks to re-IDLE within 29).
     /// ponytail: Gmail sends no IDLE event for label changes made elsewhere; they arrive on the next resync.
-    func idle(_ conn: IMAPConnection) async throws {
+    func idle(_ conn: IMAPConnection, for seconds: Double = 25 * 60) async throws {
         let wakes = self.wakes
         try await withThrowingTaskGroup(of: Void.self) { group in
-            group.addTask { try await Task.sleep(for: .seconds(25 * 60)) }
+            group.addTask { try await Task.sleep(for: .seconds(seconds)) }
             group.addTask { for await _ in wakes { return } }
             group.addTask {
                 try await conn.sendIdle { _, responses in

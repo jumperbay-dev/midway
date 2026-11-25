@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="navy" x2="0" y2="1">
+      <stop stop-color="#0F1E2A"/>
+      <stop offset="1" stop-color="#0B1620"/>
+    </linearGradient>
+    <linearGradient id="reflection" x1="0" y1="512" x2="0" y2="630" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3FC1B6" stop-opacity=".55"/>
+      <stop offset="1" stop-color="#3FC1B6" stop-opacity=".24"/>
+    </linearGradient>
+  </defs>
+  <path fill="url(#navy)" d="M372 100h280c104 0 157 0 202 35 14 11 24 21 35 35 35 45 35 98 35 202v280c0 104 0 157-35 202-11 14-21 24-35 35-45 35-98 35-202 35H372c-104 0-157 0-202-35-14-11-24-21-35-35-35-45-35-98-35-202V372c0-104 0-157 35-202 11-14 21-24 35-35 45-35 98-35 202-35Z"/>
+  <path d="M244 512h116m304 0h116" fill="none" stroke="#3FC1B6" stroke-width="48" stroke-linecap="round"/>
+  <path d="M422 512a90 90 0 0 1 180 0" fill="none" stroke="#3FC1B6" stroke-width="48"/>
+  <path d="M422 512a90 90 0 0 0 180 0" fill="none" stroke="url(#reflection)" stroke-width="48"/>
+  <circle cx="512" cy="512" r="46" fill="#D9A441"/>
+</svg>

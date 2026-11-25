@@ -10,7 +10,9 @@ if [ -f config/Google.xcconfig ]; then
 fi
 swift build -c release --product midway
 app=build/midway.app
-rm -rf "$app" && mkdir -p "$app/Contents/MacOS" "$app/Contents/Frameworks"
+rm -rf "$app" && mkdir -p "$app/Contents/MacOS" "$app/Contents/Frameworks" "$app/Contents/Resources"
+# AppIcon.icns is made from AppIcon.svg with rsvg-convert and iconutil; see README.
+cp Resources/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 cp .build/release/midway "$app/Contents/MacOS/midway"
 ditto .build/release/Sparkle.framework "$app/Contents/Frameworks/Sparkle.framework"
 install_name_tool -add_rpath @executable_path/../Frameworks "$app/Contents/MacOS/midway"
@@ -21,6 +23,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key><string>dev.midway.app</string>
   <key>CFBundleName</key><string>midway</string>
   <key>CFBundleExecutable</key><string>midway</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${VERSION:-0.1.0}</string>
   <key>CFBundleVersion</key><string>${BUILD:-1}</string>

@@ -120,6 +120,17 @@ open -n build/midway.app --env MIDWAY_HOME=/tmp/midway-local --env MIDWAY_DEV_PL
 
 Dev store: `MIDWAY_HOME=/tmp/midway-dev swift run Seed /tmp/midway-dev` seeds sample mail, calendars and an invitation; launch with the same `MIDWAY_HOME`.
 
+App icon: `Resources/AppIcon.svg` is the source; after changing it, rebuild `Resources/AppIcon.icns` (needs `brew install librsvg`):
+
+```sh
+set=$(mktemp -d)/AppIcon.iconset; mkdir "$set"
+for s in 16 32 128 256 512; do
+  rsvg-convert -w $s -h $s Resources/AppIcon.svg -o "$set/icon_${s}x${s}.png"
+  rsvg-convert -w $((s*2)) -h $((s*2)) Resources/AppIcon.svg -o "$set/icon_${s}x${s}@2x.png"
+done
+iconutil -c icns "$set" -o Resources/AppIcon.icns
+```
+
 ## Security
 
 - **Network**: IMAP over TLS only (`swift-nio-imap` → NIOSSL, full certificate and hostname verification).
